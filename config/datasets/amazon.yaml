@@ -1,0 +1,16 @@
+# Amazon-Reviews-2023
+
+# Main categories:
+# - Sports_and_Outdoors
+# - Beauty
+# - Toys_and_Games
+
+train:
+  _target_: src.datasets.AmazonReviewsDataset
+  part: "train"
+  category: "Sports_and_Outdoors"
+
+val:
+  _target_: src.datasets.AmazonReviewsDataset
+  part: "val"
+  category: "Sports_and_Outdoors"

@@ -1,0 +1,9 @@
+_target_: src.logger.WandBWriter
+project_name: "diffusion-recommendation"
+entity: null
+run_name: "testing"
+mode: "offline"
+
+loss_names: ["loss"]
+log_checkpoints: False
+id_length: 8
