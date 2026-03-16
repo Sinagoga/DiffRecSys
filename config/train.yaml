@@ -1,0 +1,177 @@
+defaults:
+  - model: diffgrm
+  - metrics: ...
+  - datasets: amazon
+  - dataloader: stable
+  - _self_
+
+global_setings:
+  seed: 1
+  resume_from: null
+  save_dir: "./saved/testing"
+  override: True
+  model_transforms: []
+
+  monitor_metric: "val_Acc_Top_1"
+  monitor_mode: "max"
+
+training_pipeline:
+  __target__: src.pipelines.DiffusionPipeline
+
+  optimizer:
+    _target_: torch.optim.AdamW
+    lr: 0.003
+    weight_decay: 0.0
+
+  scheduler:
+    _target_: torch.optim.lr_scheduler.OneCycleLR
+    max_lr: ${training_pipeline.optimizer.lr}
+    pct_start: 0.02
+    div_factor: 10.0
+    final_div_factor: 10.0
+    steps_per_epoch: ${trainer.limit_train_batches}
+    epochs: ${trainer.max_epochs}
+    anneal_strategy: cos
+
+  config:
+    # ─── 新增：random-beam 的采样超参（示例） ────────────────────
+    random_beam:
+      beam_act: 64        # 👈 你要的 "random_beam_size"
+      beam_max: 64
+      seed: 42            # 保留，用来固定随机列顺序
+
+    # Generation - 向量化Beam Search配置（统一管理）
+    vectorized_beam_search:
+      # === 通用配置 ===
+      top_k_final: 10                  # 最终返回的序列数量
+      neg_inf_fp32: -1000000000.0      # FP32负无穷值 (-1e9)
+      neg_inf_fp16: -65504.0           # FP16负无穷值
+      dedup_strategy: simple            # 去重策略：simple | weighted | none
+
+      # === split-specific配置 ===
+      # 验证时使用较小的beam size，保证速度
+      val:     {beam_act: 32,  beam_max: 32}
+      # 测试时使用较大的beam size，保证精度
+      test:    {beam_act: 256, beam_max: 256}
+      
+      # ↓可留可删，纯兼容旧代码
+      beam_act: 32
+      beam_max: 32
+
+trainer:
+  _target_: lightning.Trainer
+  accelerator: auto
+  precision: 16-mixed
+  max_epochs: 200
+  limit_train_batches: 600
+  log_every_n_steps: 60
+  accumulate_grad_batches: 1
+  gradient_clip_val: 1.0
+  check_val_every_n_epoch: 20
+
+  deterministic: True # Set to False for faster training, but results may not be reproducible across runs
+  benchmark: False # Set to True to enable cudnn auto-tuner to find the best algorithm for your hardware, which can lead to faster training. However, it may cause non-deterministic behavior across runs.
+
+  logger:
+    - _target_: lightning.loggers.WandbLogger
+      project: "diffusion-recommendation"
+      name: "testing"
+      offline: True
+      log_model: "all"
+  callbacks:
+    - _target_: lightning.callbacks.ModelCheckpoint
+      monitor: ${global_setings.monitor_metric}
+      mode: ${global_setings.monitor_mode}
+      save_top_k: 1
+      dirpath: ${global_setings.save_dir}
+    - _target_: lightning.callbacks.EarlyStopping
+      monitor: ${global_setings.monitor_metric}
+      mode: ${global_setings.monitor_mode}
+      patience: 15
+
+extra:
+  share_embeddings: true
+
+  # ─── 新增：要在验证/测试阶段跑的 beam 模式 ─────────────────────
+  beam_search_modes: ["confidence", "random"]   # 顺序决定日志展示顺序
+  # 如果只想偶尔跑 random，把它删掉即可
+
+  # 兼容性参数（保留用于旧代码）
+  beam_size: 10
+  max_generation_len: 4
+
+  # Data Split Configuration
+  split: leave_one_out          # 数据划分策略：leave_one_out | last_out
+  train_sliding: false          # 是否对train做滑窗扩充（true=滑窗，false=经典leave-one-out）
+  min_hist_len: 2               # 滑窗最短history长度（含label前的序列长度）
+  max_hist_len: 50              # 滑窗最长history长度（与max_history_len对齐）
+
+  # Sentence Embedding (for SID generation)
+  metadata: sentence
+  sent_emb_model: sentence-transformers/sentence-t5-base
+  sent_emb_dim: 768
+  sent_emb_pca: 256
+  normalize_after_pca: true
+  sent_emb_batch_size: 512
+
+  # SID Quantization
+  # opq_pq(默认) | rq_kmeans | none(随机映射)
+  sid_quantizer: opq_pq
+  rq_kmeans_niters: 20
+  rq_kmeans_seed: 2026
+  sid_random_seed: 2026
+
+  # OPQ Configuration
+  opq_use_gpu: False
+  opq_gpu_id: 0
+  faiss_omp_num_threads: 32
+  force_regenerate_opq: true  # 是否强制重新生成OPQ量化结果（即使已存在）
+  disable_opq: false  # 是否禁用OPQ，使用纯PQ量化
+
+  # Training
+  temperature: 0.07
+  train_batch_size: 256
+  eval_batch_size: 32
+
+
+  # Evaluation
+  eval_interval: 1  # 每xx轮评估一次，而不是每轮都评估
+  eval_start_epoch: 20  # 从第xx个epoch开始评估
+  min_delta: 0.0     # 提升至少超过这个值才算improve
+  topk: [5,10]
+  metrics: [ndcg,recall]
+  val_metric: weighted_score  # 使用加权综合指标：weighted_score = 0.8 * ndcg_10 + 0.2 * recall_10
+
+  # ── Auto mask schedule (off by default) ───────────────────────────
+  mask_schedule:
+    enabled: false
+
+    # 显式两阶段管线：Stage-1 随机 sequential；Stage-2 guided(least)
+    pipeline:
+      - strategy: sequential
+        sequential_steps: auto      # = n_digit；若你想更少，写具体数，如 3
+        sequential_paths: 2         # 👈 可控，1~N（越大显存越高）
+        epochs: 10                  # 跑 10 个 epoch 后自动切换
+
+      - strategy: guided
+        guided_select: least        # 👈 只要 least，不要 most
+        guided_steps: auto          # = n_digit（或填具体数）
+        guided_conf_metric: msp     # 或 entropy
+        guided_refresh_each_step: false
+        epochs: -1                  # -1 = 直到训练结束/早停
+
+    # 建议把评估频率拉高，便于快速判断"无提升"
+    eval_start_epoch_override: 5  # 开启日程时，评估从第1个epoch就开始
+    eval_interval_override: 1     # 每个epoch评估一次
+
+  # ─── 新增：消融式（减少步数）解码开关与超参（默认关闭，不影响原流程） ─────────────
+  ablate_decode:
+    enabled: false           # true=启用消融；false=完全不走该分支
+    per_digit_topk: null     # 组合阶段每列先取的 topL；null=等同 beam_act
+    beam:
+      val:  { beam_act: 32 }
+      test: { beam_act: 128 }
+
+  # ─── 新增：评估时将 SID 组合按簇展开到 item 再评估（可开关） ─────────────
+  eval_expand_sid_to_items: false   # true=额外输出一套 _xitem 指标；false=仅原SID级指标
+  eval_expand_dedup: first          # 展开前对 SID 去重策略：first（仅保留首次）

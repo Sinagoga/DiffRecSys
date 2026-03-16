@@ -1,0 +1,79 @@
+import warnings
+
+import hydra
+import lightning as L
+from hydra.utils import instantiate
+from omegaconf import OmegaConf
+
+from src.datasets.data_utils import get_dataloaders, move_batch_transforms_to_device
+from src.utils.init_utils import setup_saving_and_logging
+
+warnings.filterwarnings("ignore", category=UserWarning)
+
+
+@hydra.main(version_base=None, config_path="config", config_name="baseline")
+def main(config):
+    """
+    Main script for training. Instantiates the model, optimizer, scheduler,
+    metrics, logger, writer, and dataloaders. Runs Trainer to train and
+    evaluate the model.
+
+    Args:
+        config (DictConfig): hydra experiment config.
+    """
+    L.seed_everything(config.global_setings.seed)
+
+    project_config = OmegaConf.to_container(config)
+
+    setup_saving_and_logging(config)
+    
+    # setup data_loader instances
+    # batch_transforms should be put on device
+    dataloaders, batch_transforms = get_dataloaders(config)
+    batch_transforms = move_batch_transforms_to_device(batch_transforms, 'cuda')
+
+    # build model architecture, then print to console
+    model = instantiate(config.model, num_classes=config.get("num_classes", 1000))
+
+    # Apply model transforms
+    for transform_config in config.global_setings.get("model_transforms", []):
+        instantiate(transform_config, model)
+
+    metrics = {"train": [], "inference": []}
+    for metric_type in ["train", "inference"]:
+        for metric_config in config.metrics.get(metric_type, []):
+            # use text_encoder in metrics
+            metrics[metric_type].append(
+                instantiate(metric_config)
+            )
+
+    optimizer = instantiate(config.training_pipeline.optimizer, model.parameters())
+    scheduler = instantiate(config.training_pipeline.scheduler, optimizer)
+    training_pipeline = instantiate(
+        config.training_pipeline,
+        model=model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+    )
+
+    trainer = instantiate(config.trainer)
+
+    for logger in trainer.loggers:
+        logger.log_hyperparams(project_config)
+
+    trainer.fit(
+        model=training_pipeline,
+        train_dataloader=dataloaders["train"],
+        val_dataloader=dataloaders.get("val")
+    )
+
+    for analyzer_config in config.get("analyzers", []):
+        analyzer = instantiate(analyzer_config.analyzer)
+        analyzer.analyze_and_visualize(
+            save_path=config.trainer.save_dir,
+            model=trainer.model,
+        )
+
+
+if __name__ == "__main__":
+    main()
