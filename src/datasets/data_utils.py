@@ -9,18 +9,6 @@ from src.datasets.collate import collate_fn
 from src.utils.init_utils import set_worker_seed
 
 
-def inf_loop(dataloader):
-    """
-    Wrapper function for endless dataloader.
-    Used for iteration-based training scheme.
-
-    Args:
-        dataloader (DataLoader): classic finite dataloader.
-    """
-    for loader in repeat(dataloader):
-        yield from loader
-
-
 def move_batch_transforms_to_device(batch_transforms, device):
     """
     Move batch_transforms to device.
@@ -46,7 +34,7 @@ def move_batch_transforms_to_device(batch_transforms, device):
                 transforms[transform_name] = transforms[transform_name].to(device)
 
 
-def get_dataloaders(config, device):
+def get_dataloaders(config):
     """
     Create dataloaders for each of the dataset partitions.
     Also creates instance and batch transforms.
@@ -65,7 +53,6 @@ def get_dataloaders(config, device):
     """
     # transforms or augmentations init
     batch_transforms = instantiate(config.transforms.batch_transforms)
-    move_batch_transforms_to_device(batch_transforms, device)
 
     # dataloaders init
     dataloaders = {}

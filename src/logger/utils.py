@@ -7,20 +7,18 @@ from torchvision.transforms import ToTensor
 plt.switch_backend("agg")  # fix RuntimeError: main thread is not in main loop
 
 
-def plot_images(imgs, config):
+def plot_images(imgs, names):
     """
     Combine several images into one figure.
 
     Args:
         imgs (Tensor): array of images (B X C x H x W).
-        config (DictConfig): hydra experiment config.
+        names (list[str]): list of names for the images. Should be the same
+            length as the batch size.
     Returns:
         image (Tensor): a single figure with imgs plotted side-to-side.
     """
-    # name of each img in the array
-    names = config.writer.names
-    # figure size
-    figsize = config.writer.figsize
+    figsize = (12, 12)
     fig, axes = plt.subplots(1, len(names), figsize=figsize)
     for i in range(len(names)):
         # channels must be in the last dim
