@@ -5,7 +5,7 @@ import requests
 
 from hydra.utils import instantiate
 
-from src.datasets.collate import collate_fn
+from src.datasets.collate import collate_fn_train, collate_fn_val
 from src.utils.init_utils import set_worker_seed
 
 
@@ -34,50 +34,70 @@ def move_batch_transforms_to_device(batch_transforms, device):
                 transforms[transform_name] = transforms[transform_name].to(device)
 
 
-def get_dataloaders(config):
+def get_datasets(config):
+    """
+    Create datasets for each of the dataset partitions.
+
+    Args:
+        config (DictConfig): hydra experiment config.
+
+    Returns:
+        datasets (dict[Dataset]): dict containing dataset instances for each partition.
+    """
+    datasets = {}
+    for dataset_partition in config.datasets.keys():
+        dataset_cfg = config.datasets[dataset_partition]
+
+        # dataset partition init
+        dataset = instantiate(dataset_cfg)  # instance transforms are defined inside
+
+        datasets[dataset_partition] = dataset
+
+    return datasets
+
+
+def get_dataloaders(config, datasets, tokenization=None):
     """
     Create dataloaders for each of the dataset partitions.
     Also creates instance and batch transforms.
 
     Args:
         config (DictConfig): hydra experiment config.
-        text_encoder (CTCTextEncoder): instance of the text encoder
-            for the datasets.
-        device (str): device to use for batch transforms.
+        datasets (dict[Dataset]): dict containing dataset instances for each partition.
+        tokenization (Callable | None): tokenization function to be applied on the batch.
+            If not None, it is passed to the dataloader collate_fn to be applied on the batch.
+            This is required for text data, where tokenization is needed. For other data modalities, tokenization is not needed, so tokenization can be set to None.
     Returns:
         dataloaders (dict[DataLoader]): dict containing dataloader for a
             partition defined by key.
-        batch_transforms (dict[Callable] | None): transforms that
-            should be applied on the whole batch. Depend on the
-            tensor name.
+        datasets (dict[Dataset]): dict containing dataset instances for each partition.
     """
-    # transforms or augmentations init
-    batch_transforms = instantiate(config.transforms.batch_transforms)
-
     # dataloaders init
     dataloaders = {}
-    for dataset_partition in config.datasets.keys():
-        # dataset partition init
-        dataset = instantiate(
-            config.datasets[dataset_partition]
-        )  # instance transforms are defined inside
+    for dataset_partition, dataset in datasets.items():
+        dataloader_cfg = config.dataloaders[dataset_partition]
 
-        assert config.dataloader.batch_size <= len(dataset), (
-            f"The batch size ({config.dataloader.batch_size}) cannot "
+        assert dataloader_cfg.batch_size <= len(dataset), (
+            f"The batch size ({dataloader_cfg.batch_size}) cannot "
             f"be larger than the dataset length ({len(dataset)})"
         )
 
+        collate_fn = collate_fn_train if dataset_partition == "train" else collate_fn_val
+        if tokenization is not None:
+            collate_fn = lambda batch: collate_fn(tokenization(batch, split=dataset_partition))
+
         partition_dataloader = instantiate(
-            config.dataloader,
+            dataloader_cfg,
             dataset=dataset,
             collate_fn=collate_fn,
             drop_last=(dataset_partition == "train"),
-            shuffle=False and (dataset_partition == "train"), # No random access for IterableDatasets
+            shuffle=(dataset_partition == "train"), # No random access for IterableDatasets
             worker_init_fn=set_worker_seed,
         )
+
         dataloaders[dataset_partition] = partition_dataloader
 
-    return dataloaders, batch_transforms
+    return dataloaders
 
 
 #################################

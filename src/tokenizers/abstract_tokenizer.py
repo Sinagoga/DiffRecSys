@@ -1,14 +1,14 @@
-from logging import getLogger
-from genrec.utils import log
+import logging
 
+
+logger = logging.getLogger(__name__)
 
 
 class AbstractTokenizer:
     def __init__(self, config: dict):
-        self.logger = getLogger()
+        self.logger = logger
         self.config = config
         self.eos_token = None
-        self.collate_fn = {'train': None, 'val': None, 'test': None}
 
     def fit(self, datasets):
         raise NotImplementedError('Tokenizer fitting not implemented.')
@@ -27,9 +27,6 @@ class AbstractTokenizer:
     @property
     def max_token_seq_len(self):
         raise NotImplementedError('Maximum token sequence length not implemented.')
-
-    def log(self, message, level='info'):
-        return log(message, self.config['accelerator'], self.logger, level=level)
     
     def save(self, path):
         raise NotImplementedError('Tokenizer saving not implemented.')

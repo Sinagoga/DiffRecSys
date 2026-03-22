@@ -1,0 +1,21 @@
+__target__: src.tokenizers.pq_tokenizer.PQTokenizer
+config:
+  # Sentence Embedding (for SID generation)
+  sent_emb_model: sentence-transformers/sentence-t5-base
+  sent_emb_dim: 768
+  sent_emb_pca: 256
+  normalize_after_pca: true
+  sent_emb_batch_size: 512
+
+  # SID Quantization
+  # opq_pq(默认) | rq_kmeans | none(随机映射)
+  rq_kmeans_niters: 20
+  rq_kmeans_seed: 2026
+  sid_random_seed: 2026
+
+  # OPQ Configuration
+  opq_use_gpu: False
+  opq_gpu_id: 0
+  faiss_omp_num_threads: 32
+  force_regenerate_opq: true  # 是否强制重新生成OPQ量化结果（即使已存在）
+  disable_opq: false  # 是否禁用OPQ，使用纯PQ量化

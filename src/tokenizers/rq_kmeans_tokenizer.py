@@ -1,6 +1,7 @@
 import os
-import numpy as np
 import json
+
+import numpy as np
 
 import faiss
 
@@ -11,7 +12,6 @@ class RQKMeansTokenizer(SIDTokenizerBase):
     """Residual Quantization (KMeans) tokenizer."""
 
     def _init_index_factory(self):
-        self.sid_quantizer = 'rq_kmeans'
         self.index_factory = f'RQKMEANS{self.n_digit}x{self.n_codebook_bits}'
 
     def _get_quant_tag_extra(self) -> str:
@@ -21,12 +21,12 @@ class RQKMeansTokenizer(SIDTokenizerBase):
     def _prepare_sentence_embeddings(self, dataset, raw_path: str, pca_path: str):
         """Prepare sentence embeddings for RQ-KMeans (raw only, no PCA)."""
         if os.path.exists(raw_path):
-            self.log(f'[TOKENIZER] Loading RAW sentence embeddings from {raw_path}...')
+            self.logger.info(f'[TOKENIZER] Loading RAW sentence embeddings from {raw_path}...')
             return np.fromfile(raw_path, dtype=np.float32).reshape(
                 -1, self.config['sent_emb_dim']
             )
 
-        self.log(f'[TOKENIZER] Encoding sentence embeddings (RAW, no PCA for RQ-KMeans)...')
+        self.logger.info(f'[TOKENIZER] Encoding sentence embeddings (RAW, no PCA for RQ-KMeans)...')
         return self._encode_sent_emb(dataset, raw_path)
 
     def _generate_semantic_ids(self, sent_embs, sem_ids_path, train_mask):

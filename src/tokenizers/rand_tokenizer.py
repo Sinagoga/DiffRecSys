@@ -1,12 +1,7 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
-# All rights reserved.
-#
-# This source code is licensed under the license found in the
-# LICENSE file in the root directory of this source tree.
-
 import os
-import numpy as np
 import json
+
+import numpy as np
 
 from src.tokenizers.sid_tokenizer_base import SIDTokenizerBase
 
@@ -15,7 +10,6 @@ class RandTokenizer(SIDTokenizerBase):
     """Random mapping tokenizer (no embedding quantization)."""
 
     def _init_index_factory(self):
-        self.sid_quantizer = 'none'
         self.index_factory = f'RAND{self.n_digit}x{self.n_codebook_bits}'
 
     def _get_quant_tag_extra(self) -> str:

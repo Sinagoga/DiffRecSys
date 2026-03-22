@@ -1,4 +1,10 @@
-_target_: torch.utils.data.DataLoader
-batch_size: 256
-num_workers: 32
-pin_memory: True
+train:
+  _target_: torch.utils.data.DataLoader
+  batch_size: 256
+  num_workers: 32
+  pin_memory: True
+val:
+  _target_: torch.utils.data.DataLoader
+  batch_size: 32
+  num_workers: 32
+  pin_memory: True

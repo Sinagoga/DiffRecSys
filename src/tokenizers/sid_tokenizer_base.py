@@ -3,68 +3,15 @@ import os
 import math
 import json
 import pickle
-from typing import Dict, List, Any
 
 import numpy as np
+
 import torch
 
 from sentence_transformers import SentenceTransformer
 
 from src.datasets.base_dataset import BaseDataset as AbstractDataset
 from src.tokenizers.abstract_tokenizer import AbstractTokenizer
-
-
-def stack_to_tensor(seq, dtype=None):
-    """Utility: stack all elements into a tensor; cast dtype if provided."""
-    if torch.is_tensor(seq[0]):
-        out = torch.stack(seq, dim=0)
-        return out.to(dtype) if dtype is not None else out
-    return torch.tensor(seq, dtype=(dtype if dtype is not None else torch.long))
-
-
-def collate_fn_train(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-    """Collate function used during training.
-
-    Args:
-        batch: A list of dicts containing the following fields:
-            - history_sid: history SID sequence [seq_len, n_digit]
-            - history_mask: history mask [seq_len]
-            - decoder_input_ids: decoder input [n_digit]
-            - decoder_labels: decoder labels [n_digit]
-
-    Returns:
-        A dict with batched tensors.
-    """
-    return {
-        'history_sid': stack_to_tensor([b['history_sid'] for b in batch]),                      # [B, S, n_digit]
-        'history_mask': stack_to_tensor([b['history_mask'] for b in batch], dtype=torch.bool),  # [B, S]
-        'decoder_input_ids': stack_to_tensor([b['decoder_input_ids'] for b in batch]),          # [B, n_digit]
-        'decoder_labels': stack_to_tensor([b['decoder_labels'] for b in batch]),                # [B, n_digit]
-    }
-
-
-def collate_fn_val(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-    """Collate function used during validation.
-
-    Args:
-        batch: A list of dicts containing the following fields:
-            - history_sid: history SID sequence [seq_len, n_digit]
-            - history_mask: history mask [seq_len]
-            - labels: ground truth label sequence [n_digit]
-
-    Returns:
-        A dict with batched tensors.
-    """
-    return {
-        'history_sid': stack_to_tensor([b['history_sid'] for b in batch]),
-        'history_mask': stack_to_tensor([b['history_mask'] for b in batch], dtype=torch.bool),
-        'labels': stack_to_tensor([b['labels'] for b in batch]),
-    }
-
-
-def collate_fn_test(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-    """Collate function used during testing (same as validation)."""
-    return collate_fn_val(batch)
 
 
 class SIDTokenizerBase(AbstractTokenizer):
@@ -89,18 +36,11 @@ class SIDTokenizerBase(AbstractTokenizer):
 
         # Initialize quantizer-specific configuration (index factory, tags, etc.)
         self._init_index_factory()
-        self.log(f'[TOKENIZER] Index factory: {getattr(self, "index_factory", None)}')
+        self.logger.info(f'[TOKENIZER] Index factory: {getattr(self, "index_factory", None)}')
 
         # Create reverse mapping for inference (if not already created)
         if not hasattr(self, 'tokens2item'):
             self.tokens2item = self._create_reverse_mapping()
-
-        # Set collate functions
-        self.collate_fn = {
-            'train': collate_fn_train,
-            'val': collate_fn_val,
-            'test': collate_fn_test
-        }
 
     # -------------------------------------------------------------------------
     # Methods to be implemented by subclasses
@@ -161,12 +101,10 @@ class SIDTokenizerBase(AbstractTokenizer):
 
     def _encode_sent_emb(self, dataset: AbstractDataset, output_path: str) -> np.ndarray:
         """Encode sentence embeddings using a Hugging Face SentenceTransformer and normalize vectors."""
-        assert self.config['metadata'] == 'sentence', \
-            'SIDTokenizer only supports sentence metadata.'
-
         meta_sentences = []
-        for i in range(1, dataset.n_items):
-            meta_sentences.append(dataset.item2meta[dataset.id_mapping['id2item'][i]])
+        for v in dataset.id_mapping['id2item'].values():  # Skip item_id=0 (PAD)
+            if v != "[PAD]":
+                meta_sentences.append(dataset.item2meta[v])
 
         # Supports any HF model id (e.g., Alibaba-NLP/gte-large-en-v1.5 or BAAI/bge-large-en-v1.5)
         model_id = self.config['sent_emb_model']
@@ -190,34 +128,28 @@ class SIDTokenizerBase(AbstractTokenizer):
         """Get items used for training."""
         items_for_training = set()
 
-        # Trigger dataset splitting (if not already done)
-        split_data = dataset.split()
+        for element in dataset:
+            item_seq = element['history']
+            if isinstance(item_seq, (list, tuple)):
+                items_for_training.update(item_seq)
+            else:
+                items_for_training.add(item_seq)
 
-        # Collect all items from the training split
-        if 'train' in split_data:
-            train_dataset = split_data['train']
-            # train_dataset is a Hugging Face Dataset object
-            if hasattr(train_dataset, 'column_names') and 'item_seq' in train_dataset.column_names:
-                # Iterate over all item_seq entries
-                for item_seq in train_dataset['item_seq']:
-                    if isinstance(item_seq, (list, tuple)):
-                        items_for_training.update(item_seq)
-                    else:
-                        items_for_training.add(item_seq)
+        item2id = dataset.id_mapping['item2id']
 
         # Ensure mask size matches sentence embeddings
         # sent_embs contains items with item_id in [1, n_items-1]
-        n_sent_embs = dataset.n_items - 1  # Matches range(1, dataset.n_items) in _encode_sent_emb
-        self.log(f'[TOKENIZER] Items for training: {len(items_for_training)} of {n_sent_embs}')
-        self.log(f'[TOKENIZER] Training items sample: {list(items_for_training)[:10]}')
+        n_sent_embs = len(item2id) - 1  # Matches range(1, dataset.n_items) in _encode_sent_emb
+        self.logger.info(f'[TOKENIZER] Items for training: {len(items_for_training)} of {n_sent_embs}')
+        self.logger.info(f'[TOKENIZER] Training items sample: {list(items_for_training)[:10]}')
 
         mask = np.zeros(n_sent_embs, dtype=bool)
         for item in items_for_training:
-            item_id = dataset.item2id[item]
-            if 1 <= item_id < dataset.n_items:  # Ensure item_id is in valid range
+            item_id = item2id[item]
+            if 1 <= item_id < len(item2id):  # Ensure item_id is in valid range
                 mask[item_id - 1] = True  # Convert to 0-based index
 
-        self.log(f'[TOKENIZER] Mask shape: {mask.shape}, True count: {np.sum(mask)}')
+        self.logger.info(f'[TOKENIZER] Mask shape: {mask.shape}, True count: {np.sum(mask)}')
         return mask
 
     def _sem_ids_to_tokens(self, item2sem_ids: dict) -> dict:
@@ -234,7 +166,7 @@ class SIDTokenizerBase(AbstractTokenizer):
     def fit(self, dataset: AbstractDataset):
         """Initialize tokenizer and generate/load mappings."""
         self.dataset = dataset
-        self.item2id = dataset.item2id
+        self.item2id = dataset.id_mapping['item2id']
         self.id2item = dataset.id_mapping['id2item']
 
         # Build cache path - use class name + category
@@ -280,15 +212,15 @@ class SIDTokenizerBase(AbstractTokenizer):
         # 🚀 Generate or load quantization results
         if force_regenerate or not os.path.exists(sem_ids_path):
             if force_regenerate:
-                self.log(f'[TOKENIZER] Force regenerating quantization results ({getattr(self, "sid_quantizer", "")})...')
+                self.logger.info(f'[TOKENIZER] Force regenerating quantization results ({self.index_factory})...')
             else:
-                self.log(f'[TOKENIZER] Quantization results not found, generating ({getattr(self, "sid_quantizer", "")})...')
+                self.logger.info(f'[TOKENIZER] Quantization results not found, generating ({self.index_factory})...')
             training_item_mask = self._get_items_for_training(dataset)
             self._generate_semantic_ids(sent_embs, sem_ids_path, training_item_mask)
         else:
-            self.log(f'[TOKENIZER] Using existing quantization results from {sem_ids_path}')
+            self.logger.info(f'[TOKENIZER] Using existing quantization results from {sem_ids_path}')
 
-        self.log(f'[TOKENIZER] Loading semantic IDs from {sem_ids_path}...')
+        self.logger.info(f'[TOKENIZER] Loading semantic IDs from {sem_ids_path}...')
         item2sem_ids = json.load(open(sem_ids_path, 'r'))
         item2tokens = self._sem_ids_to_tokens(item2sem_ids)
 
@@ -301,14 +233,14 @@ class SIDTokenizerBase(AbstractTokenizer):
         if force_regenerate:
             # When force regenerating, ignore old files so the logic below will re-save them
             fwd_exists = inv_exists = False
-            self.log(f'[TOKENIZER] Force regenerate enabled, ignoring existing mapping files')
+            self.logger.info(f'[TOKENIZER] Force regenerate enabled, ignoring existing mapping files')
         else:
             fwd_exists = os.path.exists(fwd_path)
             inv_exists = os.path.exists(inv_path)
 
         if fwd_exists and inv_exists:
             # ---------- ① Files exist ----------
-            self.log(f'[TOKENIZER] Loading existing mappings for tag: {map_tag} from {fwd_path}')
+            self.logger.info(f'[TOKENIZER] Loading existing mappings for tag: {map_tag} from {fwd_path}')
 
             # Reconstruct item2tokens mapping
             item_id2tokens = np.load(fwd_path)
@@ -322,13 +254,13 @@ class SIDTokenizerBase(AbstractTokenizer):
             with open(inv_path, 'rb') as f:
                 self.tokens2item = pickle.load(f)
 
-            self.log(f'[TOKENIZER] Successfully loaded {len(item2tokens)} item mappings')
+            self.logger.info(f'[TOKENIZER] Successfully loaded {len(item2tokens)} item mappings')
         else:
             # ---------- ② Files absent or force regenerate; need to regenerate ----------
             if force_regenerate:
-                self.log(f'[TOKENIZER] Force regenerate enabled, generating new mappings')
+                self.logger.info(f'[TOKENIZER] Force regenerate enabled, generating new mappings')
             else:
-                self.log(f'[TOKENIZER] No existing mappings found for {self.n_digit}-digit, will generate new ones')
+                self.logger.info(f'[TOKENIZER] No existing mappings found for {self.n_digit}-digit, will generate new ones')
 
             # Whether files are missing or force regenerate is enabled, save new item2tokens
             self.item2tokens = item2tokens
@@ -371,7 +303,7 @@ class SIDTokenizerBase(AbstractTokenizer):
         map_tag = f'{model_basename}_pca{self.config["sent_emb_pca"]}_{quant_tag}_{self.n_digit}d'
 
         # Save forward index: item_id → SID tokens
-        item_id2tokens = np.zeros((self.dataset.n_items, self.n_digit), dtype=np.int64)
+        item_id2tokens = np.zeros((len(self.item2id), self.n_digit), dtype=np.int64)
         for item, tokens in self.item2tokens.items():
             item_id = self.item2id[item]
             item_id2tokens[item_id] = np.array(tokens)
@@ -382,37 +314,10 @@ class SIDTokenizerBase(AbstractTokenizer):
         with open(os.path.join(cache_dir, f'tokens2item_{map_tag}.pkl'), 'wb') as f:
             pickle.dump(self.tokens2item, f)
 
-        self.log(f'[TOKENIZER] Saved mappings with tag: {map_tag} to {cache_dir}')
-        self.log(f'[TOKENIZER] Files: item_id2tokens_{map_tag}.npy, tokens2item_{map_tag}.pkl')
+        self.logger.info(f'[TOKENIZER] Saved mappings with tag: {map_tag} to {cache_dir}')
+        self.logger.info(f'[TOKENIZER] Files: item_id2tokens_{map_tag}.npy, tokens2item_{map_tag}.pkl')
 
     def encode_history(self, item_seq, max_len=None):
-        """Encode user history sequence."""
-        if max_len is None:
-            max_len = self.config.get('max_history_len', 50)
-        if len(item_seq) > max_len:
-            item_seq = item_seq[-max_len:]
-
-        history_sid = []
-        for item in item_seq:
-            if item in self.item2tokens:
-                # Convert offset token IDs to codebook IDs (0..K-1)
-                tokens = list(self.item2tokens[item])  # offset token IDs
-                codebook_ids = []
-                for digit, token_id in enumerate(tokens):
-                    codebook_id = token_id - (self.sid_offset + digit * self.codebook_size)
-                    codebook_ids.append(codebook_id)
-                history_sid.append(codebook_ids)
-            else:
-                # Unknown items are padded with PAD (use -1 as sentinel to avoid confusion with codebook_id=0)
-                history_sid.append([-1] * self.n_digit)
-
-        # Pad to fixed length
-        while len(history_sid) < max_len:
-            history_sid.append([-1] * self.n_digit)
-
-        return history_sid  # Return lists so datasets.map can tensorize automatically
-
-    def encode_history_with_mask(self, item_seq, max_len=None):
         """Encode user history sequence and return a padding mask."""
         if max_len is None:
             max_len = self.config.get('max_history_len', 50)
@@ -456,22 +361,10 @@ class SIDTokenizerBase(AbstractTokenizer):
                 codebook_tokens.append(codebook_id)
 
             # decoder input and labels are both codebook IDs
-            decoder_input = codebook_tokens  # [cb0, cb1, cb2, cb3]
-            decoder_labels = codebook_tokens  # [cb0, cb1, cb2, cb3]
-        else:
-            # Unknown item
-            decoder_input = [self.pad_token] * self.n_digit  # length n_digit
-            decoder_labels = [self.pad_token] * self.n_digit  # length n_digit
+            return codebook_tokens  # [cb0, cb1, cb2, cb3]
 
-        return decoder_input, decoder_labels
-
-    def decode_tokens_to_item(self, tokens):
-        """Decode a token sequence to an item ID."""
-        if len(tokens) != self.n_digit:
-            return None
-
-        token_tuple = tuple(tokens)
-        return self.tokens2item.get(token_tuple)
+        # Unknown item
+        return [self.mask_token] * self.n_digit  # length n_digit
 
     def codebooks_to_item_id(self, cb_ids):
         """Convert a codebook ID sequence to an item_id, validating length."""
@@ -492,32 +385,32 @@ class SIDTokenizerBase(AbstractTokenizer):
         item_seq = example['history']  # Python list
         target_item = example['target']  # raw string
 
-        history_sid, history_mask = self.encode_history_with_mask(item_seq)
-        decoder_input, decoder_labels = self.encode_decoder_input(target_item)
+        history_sid, history_mask = self.encode_history(item_seq)
+        codebook_tokens = self.encode_decoder_input(target_item)
 
         if split == 'train':
             # Encode decoder input during training
             additive = {
                 'history_sid': history_sid,  # list
                 'history_mask': history_mask,  # list
-                'decoder_input_ids': decoder_input,  # list
-                'decoder_labels': decoder_labels  # list
+                'decoder_input_ids': codebook_tokens,  # list
+                'decoder_labels': codebook_tokens  # list
             }
         else:
             # Produce ground truth labels for validation/testing
             additive = {
                 'history_sid': history_sid,  # list
                 'history_mask': history_mask,  # list
-                'labels': decoder_labels  # new: ground truth label sequence
+                'labels': codebook_tokens  # new: ground truth label sequence
             }
 
         example.update(additive)
 
-    def tokenize(self, dataset: AbstractDataset):
+    def tokenize(self, batch, split: str):
         """Tokenize the dataset."""
-        dataset._index = [
-            self.tokenize_function(example, split=dataset.split_name)
-            for example in dataset._index
+        return [
+            self.tokenize_function(example, split=split)
+            for example in batch
         ]
 
     # ====== New: SID→items mapping helpers ======
@@ -569,7 +462,7 @@ class SIDTokenizerBase(AbstractTokenizer):
         }
         with open(path, 'wb') as f:
             pickle.dump(state, f)
-        self.log(f'[TOKENIZER] Saved tokenizer state to {path}')
+        self.logger.info(f'[TOKENIZER] Saved tokenizer state to {path}')
 
     def load(self, path):
         """Load tokenizer state from a file."""
@@ -578,4 +471,4 @@ class SIDTokenizerBase(AbstractTokenizer):
         self.item2tokens = state['item2tokens']
         self.tokens2item = state['tokens2item']
         self.config = state['config']
-        self.log(f'[TOKENIZER] Loaded tokenizer state from {path}')
+        self.logger.info(f'[TOKENIZER] Loaded tokenizer state from {path}')

@@ -1,8 +1,9 @@
 defaults:
   - model: diffgrm
+  - tokenizer: opq
   - metrics: ...
   - datasets: amazon
-  - dataloader: stable
+  - dataloader: stable-large
   - _self_
 
 global_setings:
@@ -14,6 +15,8 @@ global_setings:
 
   monitor_metric: "val_Acc_Top_1"
   monitor_mode: "max"
+
+pretrain_tokenizer: True  # FIXME
 
 training_pipeline:
   __target__: src.pipelines.DiffusionPipeline
@@ -101,37 +104,14 @@ extra:
   max_generation_len: 4
 
   # Data Split Configuration
-  split: leave_one_out          # 数据划分策略：leave_one_out | last_out
-  train_sliding: false          # 是否对train做滑窗扩充（true=滑窗，false=经典leave-one-out）
-  min_hist_len: 2               # 滑窗最短history长度（含label前的序列长度）
-  max_hist_len: 50              # 滑窗最长history长度（与max_history_len对齐）
-
-  # Sentence Embedding (for SID generation)
-  metadata: sentence
-  sent_emb_model: sentence-transformers/sentence-t5-base
-  sent_emb_dim: 768
-  sent_emb_pca: 256
-  normalize_after_pca: true
-  sent_emb_batch_size: 512
+  train_sliding: false          # 是否对train做滑窗扩充（true=滑窗，false=经典leave-one-out
 
   # SID Quantization
   # opq_pq(默认) | rq_kmeans | none(随机映射)
   sid_quantizer: opq_pq
-  rq_kmeans_niters: 20
-  rq_kmeans_seed: 2026
-  sid_random_seed: 2026
-
-  # OPQ Configuration
-  opq_use_gpu: False
-  opq_gpu_id: 0
-  faiss_omp_num_threads: 32
-  force_regenerate_opq: true  # 是否强制重新生成OPQ量化结果（即使已存在）
-  disable_opq: false  # 是否禁用OPQ，使用纯PQ量化
 
   # Training
   temperature: 0.07
-  train_batch_size: 256
-  eval_batch_size: 32
 
 
   # Evaluation

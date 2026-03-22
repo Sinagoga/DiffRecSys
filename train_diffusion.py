@@ -5,7 +5,7 @@ import lightning as L
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from src.datasets.data_utils import get_dataloaders, move_batch_transforms_to_device
+from src.datasets.data_utils import get_datasets, get_dataloaders, move_batch_transforms_to_device
 from src.utils.init_utils import setup_saving_and_logging
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -26,10 +26,23 @@ def main(config):
     project_config = OmegaConf.to_container(config)
 
     setup_saving_and_logging(config)
+
+    tokenizer = instantiate(config.tokenizer)
     
     # setup data_loader instances
     # batch_transforms should be put on device
-    dataloaders, batch_transforms = get_dataloaders(config)
+    datasets = get_datasets(config)
+
+    if config.get("pretrain_tokenizer", False):
+        # Pretrain the tokenizer on the training dataset
+        train_dataset = datasets.get("train")
+        if train_dataset is not None:
+            tokenizer.fit(train_dataset)
+        else:
+            raise ValueError("Training dataset not found for tokenizer pretraining.")
+
+    dataloaders = get_dataloaders(config, datasets, tokenization=tokenizer.tokenize)
+    batch_transforms = instantiate(config.transforms.batch_transforms)
     batch_transforms = move_batch_transforms_to_device(batch_transforms, 'cuda')
 
     # build model architecture, then print to console

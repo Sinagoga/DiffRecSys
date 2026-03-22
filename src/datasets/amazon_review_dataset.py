@@ -51,6 +51,10 @@ class AmazonReviewDataset(BaseDataset):
         part: str = "train",
         cache_dir: Path = "./cache/AmazonReviews2014/",
         limit: Optional[int] = None,
+
+        leave_one_out: bool = True,
+        max_history_length: Optional[int] = None,
+        min_history_length: Optional[int] = None,
     ):
         """
         Args:
@@ -77,7 +81,7 @@ class AmazonReviewDataset(BaseDataset):
         self.processed_data_dir.mkdir(parents=True, exist_ok=True)
 
         all_item_seqs, self.id_mapping, self.item2meta = self._download_and_process_raw()
-        index = self._prepare_split(all_item_seqs)
+        index = self._prepare_split(all_item_seqs, split=part, leave_one_out=leave_one_out, max_history_length=max_history_length, min_history_length=min_history_length)
 
         super().__init__(
             index=index,
@@ -264,7 +268,7 @@ class AmazonReviewDataset(BaseDataset):
 
             item2meta = load_metadata(
                 path=input_path,
-                item_asins=set(self.item2id.keys())
+                item_asins=set(self.id_mapping['item2id'].keys())
             )
             if process_mode == 'raw':
                 pass
