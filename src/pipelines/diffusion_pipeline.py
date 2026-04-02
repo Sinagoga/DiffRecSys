@@ -1,6 +1,9 @@
 import torch
 import lightning as L
 
+from src.models.abstract_model import AbstractModel
+from src.tokenizers.abstract_tokenizer import AbstractTokenizer
+
 from pipelines.utils.ablate_decode import decode_ablate_confidence
 from pipelines.utils.beam import fast_beam_search_for_eval
 
@@ -8,10 +11,10 @@ from pipelines.utils.beam import fast_beam_search_for_eval
 class DiffusionPipeline(L.LightningModule):
     def __init__(
             self,
-            model,
-            tokenizer,
-            optimizer,
-            scheduler,
+            model: AbstractModel,
+            tokenizer: AbstractTokenizer,
+            optimizer: torch.optim.Optimizer,
+            scheduler: torch.optim.lr_scheduler._LRScheduler,
             evaluator,
             **config,
         ):
@@ -39,8 +42,7 @@ class DiffusionPipeline(L.LightningModule):
             self.config['beam_search_modes'] = modes
 
     def training_step(self, batch, batch_idx):
-        outputs = self.model(batch)
-        loss = outputs.loss
+        loss = self.model.calculate_loss(batch)
         self.log("train_loss", loss)
         return loss
     
@@ -57,17 +59,17 @@ class DiffusionPipeline(L.LightningModule):
 
         # Ensure evaluation mode for inference (disable dropout)
         # obtain encoder outputs
-        encoder_hidden = self.forward(batch, return_loss=False).hidden_states
+        encoder_hidden = self.model.encode(batch)
 
         # routing: ablation 1/2/3 steps (confidence-only)
         if mode.startswith("confidence_s") and bool(self.config.get('ablate_decode', {}).get('enabled', False)):
             try:
                 steps = int(mode.split("confidence_s")[-1])
             except Exception:
-                steps = int(self.model.config.get('ablate_decode', {}).get('steps_default', 3))
+                steps = int(self.config.get('ablate_decode', {}).get('steps_default', 3))
             if steps < 4:
                 return decode_ablate_confidence(
-                    model=self,
+                    model=self.model,
                     encoder_hidden=encoder_hidden,
                     tokenizer=self.tokenizer,
                     steps=steps,
@@ -80,7 +82,7 @@ class DiffusionPipeline(L.LightningModule):
 
         # use original 4-step decoding
         return fast_beam_search_for_eval(
-            model=self,
+            model=self.model,
             encoder_hidden=encoder_hidden,
             beam_size=n_return_sequences,
             tokenizer=self.tokenizer,

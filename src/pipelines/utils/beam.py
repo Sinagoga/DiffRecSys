@@ -8,6 +8,10 @@ import torch
 import torch.nn.functional as F
 
 
+from models.abstract_model import AbstractModel
+from tokenizers.abstract_tokenizer import AbstractTokenizer
+
+
 def _beam_step_select(mode,
                       logp_matrix,      # [B, act, n_digit*VOC]
                       cur_beam_logp,    # [B, act]
@@ -132,12 +136,12 @@ def expand_cross_kv_for_beams(initial_kv_cache, beam_size):
 
 
 def iterative_mask_decode(
-        model,
-        encoder_hidden,
-        n_return_sequences=1,
-        tokenizer=None,
-        mode="confidence",
-        rand_cfg=None,
+        model: AbstractModel,
+        encoder_hidden: torch.Tensor,
+        n_return_sequences: int = 1,
+        tokenizer: AbstractTokenizer = None,
+        mode: str = "confidence",
+        rand_cfg: dict = None,
         config: dict = {},
     ):
     """
@@ -236,9 +240,7 @@ def iterative_mask_decode(
         }
         
         # Forward pass - enable KV cache to speed subsequent inference
-        outputs = model.forward_decoder_only(batch_dict, digit=None, use_cache=True)
-        all_logits = outputs.logits  # [B, n_digit, codebook_size]
-        initial_kv_cache = outputs.past_key_values  # save initial KV cache
+        all_logits, initial_kv_cache = model.decode(batch_dict, digit=None, use_cache=True) # [B, n_digit, codebook_size]; save initial KV cache
         
         # Compute log probabilities
         all_log_probs = F.log_softmax(all_logits, dim=-1)  # [B, n_digit, codebook_size]
@@ -315,8 +317,7 @@ def iterative_mask_decode(
                 }
                 
                 # Forward pass
-                outputs = model.forward_decoder_only(batch_dict, digit=None, past_key_values=expanded_kv_cache, use_cache=True)
-                all_logits = outputs.logits  # [B*BEAM_ACT, n_digit, codebook_size]
+                all_logits, _ = model.decode(batch_dict, digit=None, past_key_values=expanded_kv_cache, use_cache=True) # [B*BEAM_ACT, n_digit, codebook_size]
                 
                 # Reshape into beam dimension
                 all_logits = all_logits.view(batch_size, BEAM_ACT, n_digit, codebook_size)
@@ -378,8 +379,7 @@ def iterative_mask_decode(
                 }
                 
                 # Forward pass
-                outputs = model.forward_decoder_only(batch_dict, digit=None, past_key_values=expanded_kv_cache, use_cache=True)
-                all_logits = outputs.logits  # [B*BEAM_ACT, n_digit, codebook_size]
+                all_logits, _ = model.decode(batch_dict, digit=None, past_key_values=expanded_kv_cache, use_cache=True)  # [B*BEAM_ACT, n_digit, codebook_size]
                 
                 # Reshape into beam dimension
                 all_logits = all_logits.view(batch_size, BEAM_ACT, n_digit, codebook_size)
@@ -442,9 +442,7 @@ def iterative_mask_decode(
             }
 
             # Get logits for all positions
-            outputs = model.forward_decoder_only(batch_dict, digit=None, 
-                                               past_key_values=final_expanded_kv_cache, use_cache=True)
-            all_logits = outputs.logits  # [B*BEAM_ACT, n_digit, codebook_size]
+            all_logits, _ = model.decode(batch_dict, digit=None, past_key_values=final_expanded_kv_cache, use_cache=True)  # [B*BEAM_ACT, n_digit, codebook_size]
 
             # Reshape and compute log probabilities
             all_logits = all_logits.view(batch_size, BEAM_ACT, n_digit, codebook_size)

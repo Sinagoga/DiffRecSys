@@ -1,14 +1,17 @@
 import torch
 import torch.nn.functional as F
 
+from src.models.abstract_model import AbstractModel
+from src.tokenizers.abstract_tokenizer import AbstractTokenizer
+
 from .comb_topk import combine_remaining_topk
 
 
 @torch.no_grad()
 def decode_ablate_confidence(
-    model,
+    model: AbstractModel,
     encoder_hidden: torch.Tensor,
-    tokenizer,
+    tokenizer: AbstractTokenizer,
     steps: int,
     n_return_sequences: int,
 
@@ -63,8 +66,8 @@ def decode_ablate_confidence(
         'encoder_hidden': encoder_hidden,
         'mask_positions': mask_positions
     }
-    out0 = model.forward_decoder_only(batch0, digit=None, use_cache=False)
-    logp0 = F.log_softmax(out0.logits, dim=-1)  # [B, n_digit, VOC]
+    out0_logits, _ = model.decode(batch0, digit=None, use_cache=False)
+    logp0 = F.log_softmax(out0_logits, dim=-1)  # [B, n_digit, VOC]
 
     # steps==1: directly combine all columns
     if steps <= 1:
@@ -103,8 +106,8 @@ def decode_ablate_confidence(
         'encoder_hidden': encoder_hidden.unsqueeze(1).repeat(1, BEAM_ACT, 1, 1).view(-1, encoder_hidden.size(1), encoder_hidden.size(2)),
         'mask_positions': mp_flat
     }
-    out1 = model.forward_decoder_only(batch1, digit=None, use_cache=False)
-    lp1 = F.log_softmax(out1.logits, dim=-1).view(B, BEAM_ACT, n_digit, VOC)
+    out1_logits, _ = model.decode(batch1, digit=None, use_cache=False)
+    lp1 = F.log_softmax(out1_logits, dim=-1).view(B, BEAM_ACT, n_digit, VOC)
 
     masked = lp1 + (1.0 - mask_pos.unsqueeze(-1)) * NEG_INF
     cand = beam_lp.unsqueeze(-1).unsqueeze(-1) + masked  # [B,K,D,V]
@@ -126,9 +129,9 @@ def decode_ablate_confidence(
 
 @torch.no_grad()
 def _final_combine(
-    model,
+    model: AbstractModel,
     encoder_hidden,
-    tokenizer,
+    tokenizer: AbstractTokenizer,
     beam_ids,
     beam_lp,
     top_k_final: int,
@@ -152,8 +155,8 @@ def _final_combine(
         'encoder_hidden': encoder_hidden.unsqueeze(1).repeat(1, K, 1, 1).view(-1, encoder_hidden.size(1), encoder_hidden.size(2)),
         'mask_positions': mp_flat
     }
-    out = model.forward_decoder_only(batch, digit=None, use_cache=False)
-    lp = F.log_softmax(out.logits, dim=-1).view(B, K, D, -1)  # [B,K,D,V]
+    out_logits, _ = model.decode(batch, digit=None, use_cache=False)
+    lp = F.log_softmax(out_logits, dim=-1).view(B, K, D, -1)  # [B,K,D,V]
 
     r_mask = mask_pos.bool()  # [B,K,D]
     bb = B * K

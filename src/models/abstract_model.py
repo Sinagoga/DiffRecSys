@@ -1,3 +1,7 @@
+from typing import Tuple
+
+
+import torch
 import torch.nn as nn
 
 
@@ -10,13 +14,11 @@ class AbstractModel(nn.Module):
 
         self.config = config
 
-    @property
-    def n_parameters(self):
-        total_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        return f'Total number of trainable parameters: {total_params}'
-
-    def calculate_loss(self, batch):
+    def calculate_loss(self, batch: dict) -> torch.Tensor:
         raise NotImplementedError('calculate_loss method must be implemented.')
 
-    def generate(self, batch, n_return_sequences=1):
+    def encode(self, batch: dict) -> torch.Tensor:
         raise NotImplementedError('predict method must be implemented.')
+    
+    def decode(self, batch: dict, digit=None, past_key_values=None, use_cache=False) -> Tuple[torch.Tensor, torch.Tensor]:
+        raise NotImplementedError('decode method must be implemented.')

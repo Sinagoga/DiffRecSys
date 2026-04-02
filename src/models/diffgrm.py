@@ -195,139 +195,65 @@ class DecoderBlock(nn.Module):
         return return_dict
 
 
-class ModelOutput:
-
-    def __init__(self):
-        self.loss = None
-        self.logits = None
-        self.hidden_states = None
-        self.past_key_values = None
-
-
-class DIFF_GRM(AbstractModel):
+class Encoder(nn.Module):
 
     def __init__(
         self,
-        vocab_size: int = None,
-        sid_offset: int = None,
-        **config: dict,
+        vocab_size: int,
+        n_digit: int,
+
+        n_embd: int,
+        n_head: int,
+        n_inner: int,
+        dropout: float,
+
+        attn_pdrop: float,
+        resid_pdrop: float,
+
+        norm_type: str | None = None,
+        norm_eps: float | None = None,
+
+        max_history_len: int | None = None,
+
+        sid_offset: int = 3,
+        codebook_size: int = 1000,
+
+        encoder_n_layer: int = 6,
     ):
-        super().__init__(config)
+        super().__init__()
         
-        self.config = config
-        self.tokenizer_sid_offset = sid_offset  # codebook token ID
-        self.n_digit = config['n_digit']
-        self.codebook_size = config['codebook_size']
         self.vocab_size = vocab_size
+        self.n_digit = n_digit
 
         # Model dimensions
-        self.n_embd = config['n_embd']
-        self.n_head = config['n_head']
-        self.n_inner = config['n_inner']
-        self.dropout = config['dropout']
+        self.n_embd = n_embd
+        self.n_head = n_head
+        self.n_inner = n_inner
+        self.dropout = dropout
+
+        self.attn_pdrop = attn_pdrop
+        self.resid_pdrop = resid_pdrop
+
+        # Normalization configuration
+        self.norm_type = norm_type
+        if self.norm_type is None:
+            self.norm_type = 'layernorm'
+        else:
+            self.norm_type = self.norm_type.lower()
+        self.norm_eps  = norm_eps
+        if self.norm_eps is None:
+            self.norm_eps = 1e-6 if self.norm_type=='rmsnorm' else 1e-5
+        else:
+            self.norm_eps = float(self.norm_eps)
+
+        self.tokenizer_sid_offset = sid_offset  # codebook token ID
+        self.codebook_size = codebook_size
         
         # Encoder layers
-        self.encoder_n_layer = config['encoder_n_layer']
-        self.decoder_n_layer = config['decoder_n_layer']
+        self.encoder_n_layer = encoder_n_layer
         
-        # Normalization configuration
-        self.norm_type = (config.get('norm_type', 'layernorm') or 'layernorm').lower()
-        self.norm_eps  = float(config.get('norm_eps', 1e-6 if self.norm_type=='rmsnorm' else 1e-5))
         
         # ==== Read new strategy ====
-        self.masking_strategy = config.get('masking_strategy', 'random')  # random | sequential
-        
-        if self.masking_strategy == 'sequential':
-            # Sequential multi-view
-            seq_cfg = config.get('sequential_steps', 'auto')
-            self.seq_steps = self.n_digit if seq_cfg in (None, 'auto') else int(seq_cfg)
-            assert 1 <= self.seq_steps <= self.n_digit, \
-                f"sequential_steps must be 1~{self.n_digit}, got {self.seq_steps}"
-            
-            # Added: support for multiple paths
-            self.sequential_paths = config.get('sequential_paths', 1)
-            assert self.sequential_paths >= 1, \
-                f"sequential_paths must be >= 1, got {self.sequential_paths}"
-            
-            self.augment_factor = self.seq_steps * self.sequential_paths  # updated computation
-            print(f"[MODEL] ▶ use SEQUENTIAL views: steps={self.seq_steps}, "
-                  f"paths={self.sequential_paths}, augment_factor={self.augment_factor}")
-            # Removed unnecessary mask_probs setting to save memory
-            self.mask_probs = None
-        elif self.masking_strategy == 'guided':
-            # Confidence-guided sequential multi-view (model decides reveal order per batch)
-            guided_cfg = config.get('guided_steps', 'auto')
-            self.guided_steps = self.n_digit if guided_cfg in (None, 'auto') else int(guided_cfg)
-            # Limit to at most 4 steps (e.g., n_digit=4)
-            self.guided_steps = min(self.guided_steps, self.n_digit, 4)
-            self.guided_conf_metric = config.get('guided_conf_metric', 'msp')
-            assert self.guided_conf_metric in ('msp', 'entropy'), \
-                f"guided_conf_metric must be one of ['msp','entropy'], got {self.guided_conf_metric}"
-            # Added: option to reveal positions selected as 'most' or 'least' confident
-            self.guided_select = config.get('guided_select', 'most')
-            assert self.guided_select in ('most', 'least'), \
-                f"guided_select must be one of ['most','least'], got {self.guided_select}"
-            self.augment_factor = self.guided_steps
-            print(f"[MODEL] ▶ GUIDED: steps={self.guided_steps}, metric={self.guided_conf_metric}, "
-                  f"select={self.guided_select}, augment_factor={self.augment_factor}")
-            self.mask_probs = None
-        else:
-            # Legacy random mask branch (keep original logic)
-            # Diffusion specific parameters - multi-probability mask configuration
-            # New: support sampling a single mask probability from a range and repeat it via augment_factor
-            self.mask_prob_random = bool(config.get('mask_prob_random', False))
-            if self.mask_prob_random:
-                low = float(config.get('mask_prob_random_min', 0.0))
-                high = float(config.get('mask_prob_random_max', 1.0))
-                if not (0.0 <= low <= high <= 1.0):
-                    raise ValueError(
-                        f"mask_prob_random_min/max must satisfy 0.0 <= min <= max <= 1.0, got min={low}, max={high}"
-                    )
-                sampled_prob = float(np.random.uniform(low, high))
-                # By design: when random mask probability enabled, do not perform multi-view augmentation
-                self.augment_factor = 1
-                self.mask_probs = [sampled_prob]
-                self.sampled_mask_prob = sampled_prob
-                print(
-                    f"[MODEL] Using RANDOMLY-SAMPLED masking prob: {sampled_prob:.4f} (range [{low}, {high}]); disable multi-view (augment_factor=1)"
-                )
-            elif 'mask_probs' in config and config['mask_probs'] is not None:
-                # New method: directly specify multiple mask probabilities
-                mask_probs_raw = config['mask_probs']
-                
-                if isinstance(mask_probs_raw, str):
-                    # String format: "1.0,0.75,0.5,0.25"
-                    self.mask_probs = [float(p.strip()) for p in mask_probs_raw.split(',')]
-                elif isinstance(mask_probs_raw, (list, tuple)):
-                    # List or tuple format: [1.0, 0.75, 0.5, 0.25]
-                    self.mask_probs = [float(p) for p in mask_probs_raw]
-                elif isinstance(mask_probs_raw, (int, float)):
-                    # Single numeric value converted to a single-element list
-                    self.mask_probs = [float(mask_probs_raw)]
-                else:
-                    # Other types: try converting to string and parsing
-                    try:
-                        mask_probs_str = str(mask_probs_raw)
-                        self.mask_probs = [float(p.strip()) for p in mask_probs_str.split(',')]
-                    except (ValueError, AttributeError):
-                        raise ValueError(f"Cannot parse mask_probs: {mask_probs_raw} (type: {type(mask_probs_raw)}). "
-                                       "Expected string like '1.0,0.75,0.5,0.25' or list like [1.0, 0.75, 0.5, 0.25]")
-                
-                self.augment_factor = len(self.mask_probs)  # auto-set augment factor
-                print(f"[MODEL] Using multi-probability masking: {self.mask_probs}")
-            else:
-                # Legacy method: single mask probability + augment factor
-                mask_prob = config.get('mask_prob', 0.5)
-                self.augment_factor = config.get('augment_factor', 4)
-                self.mask_probs = [float(mask_prob)] * self.augment_factor  # repeat same probability
-                print(f"[MODEL] Using single-probability masking: {mask_prob} x {self.augment_factor}")
-        
-        # Validate mask probabilities validity (only for random strategy)
-        if self.masking_strategy == 'random' and self.mask_probs is not None:
-            for i, prob in enumerate(self.mask_probs):
-                if not (0.0 <= prob <= 1.0):
-                    raise ValueError(f"mask_probs[{i}] = {prob} is not in valid range [0.0, 1.0]")
-        
         # Embeddings
         self.embedding = nn.Embedding(self.vocab_size, self.n_embd)
         
@@ -342,7 +268,7 @@ class DIFF_GRM(AbstractModel):
         self.mask_emb_table = nn.Embedding(self.n_digit, self.n_embd)
         
         # Positional encoding: add absolute positional encoding only for the encoder (consistent with RPG_ED)
-        self.max_history_len = config.get('max_history_len', 50)  # default 50
+        self.max_history_len = max_history_len if max_history_len is not None else 50  # default 50
         self.pos_emb_enc = nn.Embedding(self.max_history_len, self.n_embd)
         # Removed decoder positional encoding; decoder uses mask embeddings only
         
@@ -350,118 +276,20 @@ class DIFF_GRM(AbstractModel):
         self.encoder_blocks = nn.ModuleList([
             EncoderBlock(
                 self.n_embd, self.n_head, self.n_inner,
-                config['attn_pdrop'], config['resid_pdrop'],
+                self.attn_pdrop, self.resid_pdrop,
                 act='gelu',
                 norm_type=self.norm_type, norm_eps=self.norm_eps
             )
             for _ in range(self.encoder_n_layer)
         ])
         
-        # Decoder blocks  
-        self.decoder_blocks = nn.ModuleList([
-            DecoderBlock(
-                self.n_embd, self.n_head, self.n_inner,
-                config['attn_pdrop'], config['resid_pdrop'],
-                act='gelu',
-                norm_type=self.norm_type, norm_eps=self.norm_eps
-            )
-            for _ in range(self.decoder_n_layer)
-        ])
-        
         # Layer normalization
         self.ln_f = make_norm(self.norm_type, self.n_embd, self.norm_eps)
         
-        # -- 1.1 Remove old separate heads; use shared embedding dot-product --
-        share_out = self.config.get('share_decoder_output_embedding', True)
-        if share_out:
-            # Direct weight-tying; no new parameters
-            self.output_adapter = nn.Identity()
-            print(f"[DIFF_GRM] Using shared embedding dot-product output layer")
-        else:
-            # Use this line if rolling back to an independent head
-            self.output_adapter = nn.Linear(self.n_embd, self.n_embd, bias=False)
-            print(f"[DIFF_GRM] Using independent Linear output adapter")
-        # -------------------------------------------------------------
-        
         # Dropout
         self.drop = nn.Dropout(self.dropout)
-        
-        # Initialize weights
-        self.apply(self._init_weights)
 
-    def resample_mask_prob_if_needed(self):
-        """
-        When using random + mask_prob_random=true, call at the start of each training epoch
-        to resample the mask probability from the configured range and update the mask
-        probability and loss scaling for the current epoch.
-        """
-        if self.masking_strategy == 'random' and getattr(self, 'mask_prob_random', False):
-            low = float(getattr(self, 'mask_prob_random_min', 0.0)) if hasattr(self, 'mask_prob_random_min') else float(self.config.get('mask_prob_random_min', 0.0))
-            high = float(getattr(self, 'mask_prob_random_max', 1.0)) if hasattr(self, 'mask_prob_random_max') else float(self.config.get('mask_prob_random_max', 1.0))
-            if not (0.0 <= low <= high <= 1.0):
-                raise ValueError(
-                    f"mask_prob_random_min/max must satisfy 0.0 <= min <= max <= 1.0, got min={low}, max={high}"
-                )
-            sampled_prob = float(np.random.uniform(low, high))
-            self.mask_probs = [sampled_prob]  # single view
-            self.sampled_mask_prob = sampled_prob
-            print(f"[MODEL] [Epoch-Resample] RANDOM masking prob resampled to {sampled_prob:.4f} (range [{low}, {high}]); augment_factor=1")
-
-    def set_masking_mode(self, strategy: str, **kw):
-        """
-        Hot switch during training:
-        - strategy: 'guided' | 'sequential' | 'random'
-        - kw: hyperparameters required by the corresponding strategy (see below)
-        """
-        self.masking_strategy = strategy
-
-        if strategy == 'sequential':
-            # steps
-            seq_cfg = kw.get('sequential_steps', self.config.get('sequential_steps', 'auto'))
-            self.seq_steps = self.n_digit if seq_cfg in (None, 'auto') else int(seq_cfg)
-            self.sequential_paths = int(kw.get('sequential_paths', self.config.get('sequential_paths', 1)))
-            self.augment_factor = self.seq_steps * self.sequential_paths
-            self.mask_probs = None
-            print(f"[SCHEDULE] → SEQUENTIAL: steps={self.seq_steps}, paths={self.sequential_paths}, augment_factor={self.augment_factor}")
-
-        elif strategy == 'guided':
-            guided_cfg = kw.get('guided_steps', self.config.get('guided_steps', 'auto'))
-            self.guided_steps = self.n_digit if guided_cfg in (None, 'auto') else int(guided_cfg)
-            self.guided_steps = min(self.guided_steps, self.n_digit, 4)
-            self.guided_conf_metric = kw.get('guided_conf_metric', self.config.get('guided_conf_metric', 'msp'))
-            self.guided_select = kw.get('guided_select', self.config.get('guided_select', 'least'))
-            # Note: forward reads self.config['guided_refresh_each_step'], so sync this back to config
-            self.config['guided_refresh_each_step'] = bool(kw.get(
-                'guided_refresh_each_step',
-                self.config.get('guided_refresh_each_step', False)
-            ))
-            self.augment_factor = self.guided_steps
-            self.mask_probs = None
-            print(f"[SCHEDULE] → GUIDED({self.guided_select}): steps={self.guided_steps}, metric={self.guided_conf_metric}, refresh={self.config['guided_refresh_each_step']}, augment_factor={self.augment_factor}")
-
-        elif strategy == 'random':
-            # Keep old logic, override as needed
-            self.mask_prob_random = bool(kw.get('mask_prob_random', self.config.get('mask_prob_random', False)))
-            if self.mask_prob_random:
-                self.mask_probs = [float(np.random.uniform(
-                    float(kw.get('mask_prob_random_min', self.config.get('mask_prob_random_min', 0.0))),
-                    float(kw.get('mask_prob_random_max', self.config.get('mask_prob_random_max', 1.0)))
-                ))]
-                self.augment_factor = 1
-            else:
-                if 'mask_probs' in kw and kw['mask_probs'] is not None:
-                    self.mask_probs = [float(p) for p in (kw['mask_probs'] if isinstance(kw['mask_probs'], (list, tuple)) else str(kw['mask_probs']).split(','))]
-                    self.augment_factor = len(self.mask_probs)
-                else:
-                    mp = float(kw.get('mask_prob', self.config.get('mask_prob', 0.5)))
-                    af = int(kw.get('augment_factor', self.config.get('augment_factor', 4)))
-                    self.mask_probs = [mp] * af
-                    self.augment_factor = af
-            print(f"[SCHEDULE] → RANDOM: mask_probs={self.mask_probs}, augment_factor={self.augment_factor}")
-        else:
-            raise ValueError(f"Unknown masking strategy: {strategy}")
-
-    def _compute_digit_logits(self, hidden_last, digit):
+    def get_digit_embeddings(self, digit):
         """
         Compute logits using shared embedding dot-product.
 
@@ -485,24 +313,9 @@ class DIFF_GRM(AbstractModel):
         # shape: (codebook_size, d_model)
         E_sub = self.embedding.weight[start:end]
         
-        # 2.2 optional adapter
-        h = self.output_adapter(hidden_last)  # (B, d_model)
-        
-        # 2.3 compute logits via dot-product
-        # (B, d_model) @ (d_model, codebook_size).T → (B, codebook_size)
-        logits = torch.matmul(h, E_sub.t())
-        
-        return logits
+        return E_sub  # (codebook_size, d_model)
 
-    @property
-    def n_parameters(self) -> str:
-        """
-        Return the number of parameters in the model.
-        """
-        n_params = sum(p.numel() for p in self.parameters())
-        return f"{n_params:,}"
-
-    def forward(self, batch: dict, return_loss=True) -> ModelOutput:
+    def forward(self, batch: dict) -> torch.Tensor:
         """
         Diffusion training: process masked data and predict masked positions.
 
@@ -513,17 +326,6 @@ class DIFF_GRM(AbstractModel):
                 - decoder_labels: ground-truth labels [B, n_digit]
         """
         device = next(self.parameters()).device
-        
-        # Add debug information
-        if hasattr(self, '_debug_printed'):
-            pass
-        else:
-            print(f"[DIFF_GRM] Using RPG_ED-style encoder: MLP compression + fixed 50-length sequence")
-            print(f"[DIFF_GRM] vocab_size: {self.vocab_size}, codebook_size: {self.codebook_size}")
-            print(f"[DIFF_GRM] masking_strategy: {self.masking_strategy}")
-            if self.masking_strategy == 'random' and self.mask_probs is not None:
-                print(f"[DIFF_GRM] mask_probs: {self.mask_probs}")
-            self._debug_printed = True
         
         # --- Encoder ---
         history_sid = batch['history_sid'].to(device)  # [B, seq_len, n_digit]
@@ -585,12 +387,504 @@ class DIFF_GRM(AbstractModel):
         if 'history_mask' in batch:
             history_mask = batch['history_mask'].to(device)  # [B, S], True=valid
             encoder_hidden = encoder_hidden * history_mask.unsqueeze(-1).float()
+
+        return encoder_hidden
+    
+    def encode_input_ids(self, input_ids: torch.Tensor, mask_positions: torch.Tensor | None = None) -> torch.Tensor:
+        """
+        Encode input token IDs into embeddings, used for the decoder input.
+
+        Args:
+            input_ids: [B, n_digit] token IDs for the decoder input
+            mask_positions: [B, n_digit] boolean tensor indicating masked positions
+        Returns:
+            embeddings: [B, n_digit, d_model] corresponding embeddings
+        """
+        device = next(self.parameters()).device
         
-        if not return_loss:
-            # Inference mode: return encoder outputs
-            output = ModelOutput()
-            output.hidden_states = encoder_hidden
-            return output
+        B, n_digit = input_ids.shape
+
+        # Get mask positions; if not provided assume no positions are masked
+        if mask_positions is None:
+            mask_positions = torch.zeros(B, n_digit, device=device)
+
+        # Construct decoder input embeddings
+        input_emb = torch.zeros(B, n_digit, self.n_embd, device=device)
+        
+        for d in range(n_digit):
+            # Get codebook IDs for current digit
+            codebook_ids = input_ids[:, d]  # [B_expanded]
+            
+            # Convert to token IDs and clamp for safety
+            token_ids = codebook_ids + self.tokenizer_sid_offset + d * self.codebook_size
+            token_ids = torch.clamp(token_ids, 0, self.vocab_size - 1)
+            
+            # Safe embedding lookup
+            token_emb = self.embedding(token_ids)  # [B_expanded, emb_dim]
+            
+            # Get mask embedding for current digit
+            mask_emb = self.mask_emb_table.weight[d]  # [emb_dim] - no extra tensor creation
+            mask_emb = mask_emb.unsqueeze(0).expand(B, -1)  # [B, emb_dim]
+            
+            # Choose embedding based on mask_positions
+            is_masked = mask_positions[:, d].unsqueeze(-1)  # [B, 1]
+            input_emb[:, d, :] = torch.where(is_masked.bool(), mask_emb, token_emb)
+
+        return input_emb  # [B, n_digit, emb_dim]
+    
+
+class Decoder(nn.Module):
+
+    def __init__(
+        self,
+
+        n_embd: int,
+        n_head: int,
+        n_inner: int,
+        dropout: float,
+
+        attn_pdrop: float,
+        resid_pdrop: float,
+
+        norm_type: str | None = None,
+        norm_eps: float | None = None,
+
+        decoder_n_layer: int = 6,
+    ):
+        super().__init__()
+        
+        # Model dimensions
+        self.n_embd = n_embd
+        self.n_head = n_head
+        self.n_inner = n_inner
+        self.dropout = dropout
+
+        self.attn_pdrop = attn_pdrop
+        self.resid_pdrop = resid_pdrop
+
+        # Normalization configuration
+        self.norm_type = norm_type
+        if self.norm_type is None:
+            self.norm_type = 'layernorm'
+        else:
+            self.norm_type = self.norm_type.lower()
+        self.norm_eps  = norm_eps
+        if self.norm_eps is None:
+            self.norm_eps = 1e-6 if self.norm_type=='rmsnorm' else 1e-5
+        else:
+            self.norm_eps = float(self.norm_eps)
+        
+        # Encoder layers
+        self.decoder_n_layer = decoder_n_layer
+        
+        # Decoder blocks  
+        self.decoder_blocks = nn.ModuleList([
+            DecoderBlock(
+                self.n_embd, self.n_head, self.n_inner,
+                self.attn_pdrop, self.resid_pdrop,
+                act='gelu',
+                norm_type=self.norm_type, norm_eps=self.norm_eps
+            )
+            for _ in range(self.decoder_n_layer)
+        ])
+        
+        # Layer normalization
+        self.ln_f = make_norm(self.norm_type, self.n_embd, self.norm_eps)
+        
+        # Dropout
+        self.drop = nn.Dropout(self.dropout)
+
+    def forward(self, encoder_hidden: torch.Tensor, decoder_emb: torch.Tensor, past_key_values=None, use_cache=False):
+        """
+        Run only the decoder part, used for iterative prediction during inference.
+
+        Args:
+            encoder_hidden: encoder outputs [B, seq_len, emb_dim]
+            decoder_emb: decoder inputs [B, n_digit, emb_dim]
+            past_key_values: cached key-value pairs to speed up inference
+            use_cache: whether to use KV cache
+        """
+        present_key_values = []
+        
+        # Cross-KV cache optimization: compute once in the first step and reuse from past_key_values
+        encoder_kv_list = None
+
+        decoder_hidden = self.drop(decoder_emb)
+        
+        if past_key_values is None:  # NOTE: The early condition was (past_key_values is None and use_cache)
+            # First step: precompute cross-attention KV for each layer
+            encoder_kv_list = []
+            for blk in self.decoder_blocks:
+                # Perform W_k/W_v projection, consistent with inference
+                kv_proj = blk.cross_attn.qkv(encoder_hidden)  # [B_expanded, seq_len, 3*emb_dim]
+                # extract K and V parts (skip Q part)
+                k = kv_proj[..., self.n_embd:2*self.n_embd]  # [B_expanded, seq_len, emb_dim]
+                v = kv_proj[..., 2*self.n_embd:]              # [B_expanded, seq_len, emb_dim]
+                # concatenate K and V
+                layer_kv = torch.cat([k, v], dim=-1)  # [B_expanded, seq_len, 2*emb_dim]
+                encoder_kv_list.append(layer_kv)
+        elif past_key_values is not None:
+            # Subsequent steps: extract cross-KV from past_key_values to realize true cache reuse
+            encoder_kv_list = []
+            for layer_cache in past_key_values:
+                if layer_cache is not None and len(layer_cache) >= 2:
+                    _, cross_kv = layer_cache
+                    if cross_kv is not None:
+                        cross_key, cross_value = cross_kv
+                        layer_kv = torch.cat([cross_key, cross_value], dim=-1)
+                        encoder_kv_list.append(layer_kv)
+                    else:
+                        encoder_kv_list.append(None)
+                else:
+                    encoder_kv_list.append(None)
+        
+        for i, block in enumerate(self.decoder_blocks):
+            # Get the past_key_value for the current layer
+            layer_past = past_key_values[i] if past_key_values is not None else None
+            
+            # Pass precomputed cross-KV to enable cache reuse
+            current_cross_kv = encoder_kv_list[i] if encoder_kv_list is not None else None
+            
+            block_output = block(
+                decoder_hidden, 
+                encoder_hidden=encoder_hidden,     # still pass H for fallback
+                past_key_value=layer_past,
+                use_cache=use_cache,
+                cross_key_value=current_cross_kv   # only passed on the first call
+            )
+            decoder_hidden = block_output['hidden_states']
+            
+            # Collect new key-value cache
+            if use_cache:
+                layer_present = block_output.get('present_key_value')
+                if layer_present is not None and len(layer_present) >= 2:
+                    self_present, cross_present = layer_present
+                    # ensure cross_present stores separated K and V for next cache use
+                    if cross_present is not None:
+                        # cross_present should be in (K, V) format
+                        layer_kv = encoder_kv_list[i] if encoder_kv_list is not None else None
+                        if layer_kv is not None:
+                            k, v = layer_kv.chunk(2, dim=-1)  # separate K and V
+                            cross_present = (k, v)  # save separated format for next cache use
+                    present_key_values.append((self_present, cross_present))
+                else:
+                    present_key_values.append(layer_present)
+        
+        decoder_hidden = self.ln_f(decoder_hidden)  # [B, n_digit, emb_dim]
+        
+        # If not using cache, set to None
+        if not use_cache:
+            present_key_values = None
+        
+        return decoder_hidden, present_key_values
+
+
+class ModelOutput:
+
+    def __init__(self):
+        self.loss = None
+        self.logits = None
+        self.hidden_states = None
+        self.past_key_values = None
+
+
+class DIFF_GRM(AbstractModel):
+
+    def __init__(
+        self,
+        vocab_size: int = None,
+        sid_offset: int = None,
+        **config: dict,
+    ):
+        super().__init__(config)
+        
+        self.config = config
+        self.tokenizer_sid_offset = sid_offset  # codebook token ID
+        self.n_digit = config['n_digit']
+        self.codebook_size = config['codebook_size']
+        self.vocab_size = vocab_size
+
+        # Model dimensions
+        self.n_embd = config['n_embd']
+        self.n_head = config['n_head']
+        self.n_inner = config['n_inner']
+        self.dropout = config['dropout']
+        
+        # Encoder layers
+        self.encoder_n_layer = config['encoder_n_layer']
+        self.decoder_n_layer = config['decoder_n_layer']
+        
+        # Normalization configuration
+        self.norm_type = (config.get('norm_type', 'layernorm') or 'layernorm').lower()
+        self.norm_eps  = float(config.get('norm_eps', 1e-6 if self.norm_type=='rmsnorm' else 1e-5))
+        
+        # ==== Read new strategy ====
+        self.set_masking_mode(config)  # initialize masking mode and related parameters
+
+        self.encoder = Encoder(
+            vocab_size=self.vocab_size,
+            n_digit=self.n_digit,
+            n_embd=self.n_embd,
+            n_head=self.n_head,
+            n_inner=self.n_inner,
+            dropout=self.dropout,
+            attn_pdrop=config['attn_pdrop'],
+            resid_pdrop=config['resid_pdrop'],
+            norm_type=self.norm_type,
+            norm_eps=self.norm_eps,
+            max_history_len=config.get('max_history_len', 50),
+            sid_offset=self.tokenizer_sid_offset,
+            codebook_size=self.codebook_size,
+            encoder_n_layer=self.encoder_n_layer
+        )
+        
+        # Decoder blocks
+        self.decoder = Decoder(
+            n_embd=self.n_embd,
+            n_head=self.n_head,
+            n_inner=self.n_inner,
+            dropout=self.dropout,
+            attn_pdrop=config['attn_pdrop'],
+            resid_pdrop=config['resid_pdrop'],
+            norm_type=self.norm_type,
+            norm_eps=self.norm_eps,
+            decoder_n_layer=self.decoder_n_layer,
+        )
+        
+        
+        # -- 1.1 Remove old separate heads; use shared embedding dot-product --
+        share_out = self.config.get('share_decoder_output_embedding', True)
+        if share_out:
+            # Direct weight-tying; no new parameters
+            self.output_adapter = nn.Identity()
+            print(f"[DIFF_GRM] Using shared embedding dot-product output layer")
+        else:
+            # Use this line if rolling back to an independent head
+            self.output_adapter = nn.Linear(self.n_embd, self.n_embd, bias=False)
+            print(f"[DIFF_GRM] Using independent Linear output adapter")
+        # -------------------------------------------------------------
+        
+        # Initialize weights
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        """Initialize the weights"""
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        elif isinstance(module, (nn.LayerNorm, nn.RMSNorm)):
+            # LayerNorm: has bias; RMSNorm: only weight (no bias)
+            if hasattr(module, "bias") and module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+            if hasattr(module, "weight") and module.weight is not None:
+                torch.nn.init.ones_(module.weight)
+
+    def resample_mask_prob_if_needed(self, strategy_config = None):
+        """
+        When using random + mask_prob_random=true, call at the start of each training epoch
+        to resample the mask probability from the configured range and update the mask
+        probability and loss scaling for the current epoch.
+        """
+        if self.masking_strategy != 'random' or not getattr(self, 'mask_prob_random', False):
+            return  # only applies to random masking strategy with random mask probability enabled
+        
+        low = float((strategy_config or self.config).get('mask_prob_random_min', 0.0))
+        high = float((strategy_config or self.config).get('mask_prob_random_max', 1.0))
+        if not (0.0 <= low <= high <= 1.0):
+            raise ValueError(
+                f"mask_prob_random_min/max must satisfy 0.0 <= min <= max <= 1.0, got min={low}, max={high}"
+            )
+        
+        sampled_prob = float(np.random.uniform(low, high))
+        self.mask_probs = [sampled_prob]  # single view
+        self.sampled_mask_prob = sampled_prob
+        print(f"[MODEL] [Epoch-Resample] RANDOM masking prob resampled to {sampled_prob:.4f} (range [{low}, {high}]); augment_factor=1")
+
+    def set_masking_mode(self, strategy_config):
+        """
+        Hot switch during training:
+        - strategy: 'guided' | 'sequential' | 'random'
+        - strategy_config: hyperparameters required by the corresponding strategy (see below)
+        """
+        self.masking_strategy = strategy_config.get('masking_strategy', 'random')
+
+        if self.masking_strategy == 'sequential':
+            # steps
+            # Sequential multi-view
+            seq_cfg = strategy_config.get('sequential_steps', 'auto')
+            self.seq_steps = self.n_digit if seq_cfg in (None, 'auto') else int(seq_cfg)
+            assert 1 <= self.seq_steps <= self.n_digit, \
+                f"sequential_steps must be 1~{self.n_digit}, got {self.seq_steps}"
+            
+            # Added: support for multiple paths
+            self.sequential_paths = int(strategy_config.get('sequential_paths', 1))
+            assert self.sequential_paths >= 1, \
+                f"sequential_paths must be >= 1, got {self.sequential_paths}"
+            
+            self.augment_factor = self.seq_steps * self.sequential_paths  # updated computation
+            print(f"[MODEL] -> use SEQUENTIAL views: steps={self.seq_steps}, "
+                  f"paths={self.sequential_paths}, augment_factor={self.augment_factor}")
+            
+            # Removed unnecessary mask_probs setting to save memory
+            self.mask_probs = None
+
+        elif self.masking_strategy == 'guided':
+            # Confidence-guided sequential multi-view (model decides reveal order per batch)
+            guided_cfg = strategy_config.get('guided_steps', 'auto')
+            self.guided_steps = self.n_digit if guided_cfg in (None, 'auto') else int(guided_cfg)
+
+            # Limit to at most 4 steps (e.g., n_digit=4)
+            self.guided_steps = min(self.guided_steps, self.n_digit, 4)
+            self.guided_conf_metric = strategy_config.get('guided_conf_metric', 'msp')
+            assert self.guided_conf_metric in ('msp', 'entropy'), \
+                f"guided_conf_metric must be one of ['msp','entropy'], got {self.guided_conf_metric}"
+
+            # Added: option to reveal positions selected as 'most' or 'least' confident
+            self.guided_select = strategy_config.get('guided_select', 'most')
+            assert self.guided_select in ('most', 'least'), \
+                f"guided_select must be one of ['most','least'], got {self.guided_select}"
+            # Note: forward reads self.config['guided_refresh_each_step'], so sync this back to config
+            self.config['guided_refresh_each_step'] = bool(strategy_config.get('guided_refresh_each_step', False))
+            
+            self.augment_factor = self.guided_steps
+            print(f"[MODEL] -> GUIDED: steps={self.guided_steps}, metric={self.guided_conf_metric}, "
+                  f"select={self.guided_select}, augment_factor={self.augment_factor}")
+
+            # Removed unnecessary mask_probs setting to save memory
+            self.mask_probs = None
+
+        elif self.masking_strategy == 'random':
+            # Legacy random mask branch (keep original logic)
+            # Diffusion specific parameters - multi-probability mask configuration
+            # New: support sampling a single mask probability from a range and repeat it via augment_factor
+            self.mask_prob_random = bool(strategy_config.get('mask_prob_random', False))
+
+            if self.mask_prob_random:
+                self.resample_mask_prob_if_needed(strategy_config)  # sample initial mask probability
+
+                self.augment_factor = 1
+
+            elif strategy_config.get('mask_probs', None) is not None:
+                # New method: directly specify multiple mask probabilities
+                mask_probs_raw = strategy_config['mask_probs']
+
+                if isinstance(mask_probs_raw, str):
+                    # String format: "1.0,0.75,0.5,0.25"
+                    self.mask_probs = [float(p.strip()) for p in mask_probs_raw.split(',')]
+                elif isinstance(mask_probs_raw, (list, tuple)):
+                    # List or tuple format: [1.0, 0.75, 0.5, 0.25]
+                    self.mask_probs = [float(p) for p in mask_probs_raw]
+                elif isinstance(mask_probs_raw, (int, float)):
+                    # Single numeric value converted to a single-element list
+                    self.mask_probs = [float(mask_probs_raw)]
+                else:
+                    # Other types: try converting to string and parsing
+                    try:
+                        mask_probs_str = str(mask_probs_raw)
+                        self.mask_probs = [float(p.strip()) for p in mask_probs_str.split(',')]
+                    except (ValueError, AttributeError):
+                        raise ValueError(f"Cannot parse mask_probs: {mask_probs_raw} (type: {type(mask_probs_raw)}). "
+                                       "Expected string like '1.0,0.75,0.5,0.25' or list like [1.0, 0.75, 0.5, 0.25]")
+                
+                self.augment_factor = len(self.mask_probs)  # auto-set augment factor
+                print(f"[MODEL] Using multi-probability masking: {self.mask_probs}")
+
+            else:
+                # Legacy method: single mask probability + augment factor
+                mask_prob = strategy_config.get('mask_prob', 0.5)
+                self.augment_factor = strategy_config.get('augment_factor', 4)
+                self.mask_probs = [float(mask_prob)] * self.augment_factor  # repeat same probability
+                print(f"[MODEL] Using single-probability masking: {mask_prob} x {self.augment_factor}")
+                
+        
+            # Validate mask probabilities validity (only for random strategy)
+            if self.mask_probs is not None:
+                for i, prob in enumerate(self.mask_probs):
+                    if not (0.0 <= prob <= 1.0):
+                        raise ValueError(f"mask_probs[{i}] = {prob} is not in valid range [0.0, 1.0]")
+
+        else:
+            raise ValueError(f"Unknown masking strategy: {self.masking_strategy}")
+
+    def _compute_digit_logits(self, hidden_last, digit):
+        """
+        Compute logits using shared embedding dot-product.
+
+        Args:
+            hidden_last: (B, d_model) - decoder output hidden state
+            digit: 0..n_digit-1 - codebook position to predict
+
+        Returns:
+            logits: (B, codebook_size) - predicted logits
+        """
+        E_sub = self.encoder.get_digit_embeddings(digit)  # (codebook_size, d_model)
+        
+        # 2.2 optional adapter
+        h = self.output_adapter(hidden_last)  # (B, d_model)
+        
+        # 2.3 compute logits via dot-product
+        # (B, d_model) @ (d_model, codebook_size).T → (B, codebook_size)
+        logits = torch.matmul(h, E_sub.t())
+        
+        return logits
+
+    def forward_decoder_only(self, decoder_input_ids: torch.Tensor, encoder_hidden: torch.Tensor,
+                             mask_positions: torch.Tensor = None, digit=None,
+                             past_key_values=None, use_cache=False):
+        """
+        Run only the decoder part, used for iterative prediction during inference.
+
+        Args:
+            batch: dictionary containing the following fields:
+                - decoder_input_ids: decoder inputs [B, n_digit]
+                - encoder_hidden: encoder outputs [B, seq_len, emb_dim]
+                - mask_positions: mask positions [B, n_digit] (optional)
+            digit: which digit position to predict
+            past_key_values: cached key-value pairs to speed up inference
+            use_cache: whether to use KV cache
+        """
+        _, n_digit = decoder_input_ids.shape
+        
+        # Construct decoder input embeddings
+        decoder_emb = self.encoder.encode_input_ids(decoder_input_ids, mask_positions)  # [B, n_digit, emb_dim]
+        
+        # Pass through decoder blocks with KV cache support
+        decoder_hidden, present_key_values = self.decoder.forward(
+            encoder_hidden=encoder_hidden,
+            decoder_emb=decoder_emb,
+            past_key_values=past_key_values,
+            use_cache=use_cache
+        )
+        
+        # Compute logits for the specified digit
+        if digit is not None:
+            logits = self._compute_digit_logits(decoder_hidden[:, digit, :], digit=digit)
+        else:
+            # If digit not specified, compute logits for all positions
+            logits = []
+            for d in range(n_digit):
+                logits_d = self._compute_digit_logits(decoder_hidden[:, d, :], digit=d)
+                logits.append(logits_d)
+            logits = torch.stack(logits, dim=1)  # [B, n_digit, codebook_size]
+        
+        return logits, present_key_values
+
+    def calculate_loss(self, batch):
+        """
+        Diffusion training: process masked data and predict masked positions.
+
+        Args:
+            batch: dictionary containing the following fields:
+                - history_sid: historical SID sequence [B, seq_len, n_digit]
+                - decoder_input_ids: decoder inputs [B, n_digit]
+                - decoder_labels: ground-truth labels [B, n_digit]
+        """
+        encoder_hidden = self.encoder(batch)  # [B, seq_len, emb_dim]
+        
+        device = next(self.parameters()).device
         
         # --- Multi-probability mask augmentation ---
         decoder_input_ids = batch['decoder_input_ids'].to(device)  # [B, n_digit]
@@ -641,7 +935,7 @@ class DIFF_GRM(AbstractModel):
 
             def score_with_mask(cur_mask: torch.Tensor):
                 # cur_mask: [B, n_digit], True=masked (needs prediction)
-                cur_inp = decoder_input_ids.new_zeros(B, self.n_digit)
+                cur_inp = decoder_input_ids.new_zeros(B, self.n_digit, device=device)
                 cur_inp[~cur_mask] = decoder_labels[~cur_mask]  # place true labels at unmasked positions
 
                 _was_training = self.training
@@ -649,14 +943,12 @@ class DIFF_GRM(AbstractModel):
                 with torch.no_grad():
                     if B == 1:  # print only for single sample to avoid multi-worker spam
                         print(f"[GUIDED] scoring: self.training={self.training}")  # should be False here
-                    logits = self.forward_decoder_only(
-                        {
-                            'decoder_input_ids': cur_inp,
-                            'encoder_hidden': encoder_hidden,
-                            'mask_positions': cur_mask.float()
-                        },
-                        return_loss=False, digit=None, use_cache=False
-                    ).logits  # [B, n_digit, K]
+                    logits, _ = self.forward_decoder_only(
+                        decoder_input_ids=cur_inp,
+                        encoder_hidden=encoder_hidden,
+                        mask_positions=cur_mask.float(),
+                        digit=None, use_cache=False
+                    )  # [B, n_digit, K]
                 if _was_training:
                     self.train()
 
@@ -770,57 +1062,15 @@ class DIFF_GRM(AbstractModel):
             assert torch.all(m[:, 1:] >= m[:, :-1]), "guided views should increase masked count monotonically"
         
         # --- Decoder (training mode) ---
-        # During training, also use the same cross-attention projection as in inference
-        encoder_kv_list = []
-        for blk in self.decoder_blocks:
-            # Perform W_k/W_v projection, consistent with inference
-            kv_proj = blk.cross_attn.qkv(encoder_hidden)  # [B_expanded, seq_len, 3*emb_dim]
-            # extract K and V parts (skip Q part)
-            k = kv_proj[..., self.n_embd:2*self.n_embd]  # [B_expanded, seq_len, emb_dim]
-            v = kv_proj[..., 2*self.n_embd:]              # [B_expanded, seq_len, emb_dim]
-            # concatenate K and V
-            layer_kv = torch.cat([k, v], dim=-1)  # [B_expanded, seq_len, 2*emb_dim]
-            encoder_kv_list.append(layer_kv)
-        
-        # Construct decoder input embeddings
-        decoder_emb = torch.zeros(B_expanded, self.n_digit, self.n_embd, device=device)
-        
-        for d in range(self.n_digit):
-            # Get codebook IDs for current digit
-            codebook_ids = decoder_input_ids[:, d]  # [B_expanded]
-            
-            # Convert to token IDs and clamp for safety
-            token_ids = codebook_ids + self.tokenizer_sid_offset + d * self.codebook_size
-            token_ids = torch.clamp(token_ids, 0, self.vocab_size - 1)
-            
-            # Safe embedding lookup
-            token_emb = self.embedding(token_ids)  # [B_expanded, emb_dim]
-            
-            # Get mask embedding for current digit
-            mask_emb = self.mask_emb_table.weight[d]  # [emb_dim] - no extra tensor creation
-            mask_emb = mask_emb.unsqueeze(0).expand(B_expanded, -1)  # [B_expanded, emb_dim]
-            
-            # Choose embedding based on mask_positions
-            is_masked = mask_positions[:, d].unsqueeze(-1)  # [B_expanded, 1]
-            decoder_emb[:, d, :] = torch.where(is_masked.bool(), mask_emb, token_emb)
-        
-        # Remove positional encoding: decoder uses masks only and does not need positional encodings
-        decoder_emb = self.drop(decoder_emb)
-        
-        # Pass through decoder blocks with consistent cross-attention
-        decoder_hidden = decoder_emb
-        for i, block in enumerate(self.decoder_blocks):
-            block_output = block(
-                decoder_hidden, 
-                encoder_hidden=encoder_hidden,     # still pass H for fallback
-                past_key_value=None,               # do not use KV cache during training
-                use_cache=False,                   # do not use KV cache during training
-                cross_key_value=encoder_kv_list[i] # use precomputed KV, consistent with inference
-            )
-            decoder_hidden = block_output['hidden_states']
-        
-        decoder_hidden = self.ln_f(decoder_hidden)  # [B_expanded, n_digit, emb_dim]
-        
+
+        logits, _ = self.forward_decoder_only(
+            decoder_input_ids=decoder_input_ids,
+            encoder_hidden=encoder_hidden,
+            mask_positions=mask_positions,
+            past_key_values=None,
+            digit=None, use_cache=False
+        )
+
         # Compute loss
         if self.masking_strategy == 'random' and getattr(self, 'mask_prob_random', False):
             # LLaDA style: aggregate per-sample loss across masked positions then multiply by 1/t
@@ -829,7 +1079,7 @@ class DIFF_GRM(AbstractModel):
             # when t is extremely small.
             per_sample_loss = torch.zeros(B_expanded, device=device)
             for d in range(self.n_digit):
-                logits_d = self._compute_digit_logits(decoder_hidden[:, d, :], digit=d)
+                logits_d = logits[:, d, :]  # [B_expanded, codebook_size]
                 labels_d = decoder_labels[:, d]
                 mask_d = mask_positions[:, d].float()
                 loss_d = F.cross_entropy(
@@ -846,7 +1096,7 @@ class DIFF_GRM(AbstractModel):
             total_loss = 0.0
             total_weight = 0.0
             for d in range(self.n_digit):
-                logits_d = self._compute_digit_logits(decoder_hidden[:, d, :], digit=d)
+                logits_d = logits[:, d, :]  # [B_expanded, codebook_size]
                 labels_d = decoder_labels[:, d]
                 mask_d = mask_positions[:, d].float()
                 loss_d = F.cross_entropy(
@@ -860,159 +1110,16 @@ class DIFF_GRM(AbstractModel):
             else:
                 total_loss = torch.tensor(0.0, device=device, requires_grad=True)
         
-        output = ModelOutput()
-        output.loss = total_loss
-        output.hidden_states = decoder_hidden
-        output.logits = None  # do not return all logits to save memory
-        
-        return output
+        return total_loss
 
-    def forward_decoder_only(self, batch: dict, return_loss=False, digit=None, 
-                            past_key_values=None, use_cache=False) -> ModelOutput:
-        """
-        Run only the decoder part, used for iterative prediction during inference.
-
-        Args:
-            batch: dictionary containing the following fields:
-                - decoder_input_ids: decoder inputs [B, n_digit]
-                - encoder_hidden: encoder outputs [B, seq_len, emb_dim]
-                - mask_positions: mask positions [B, n_digit] (optional)
-            digit: which digit position to predict
-            past_key_values: cached key-value pairs to speed up inference
-            use_cache: whether to use KV cache
-        """
+    def encode(self, batch):
+        return self.encoder(batch)
+    
+    def decode(self, batch, digit=None, past_key_values=None, use_cache=False):
         device = next(self.parameters()).device
-        
-        decoder_input_ids = batch['decoder_input_ids'].to(device)  # [B, n_digit]
-        encoder_hidden = batch['encoder_hidden'].to(device)  # [B, seq_len, emb_dim]
-        B, n_digit = decoder_input_ids.shape
-        
-        # Get mask positions; if not provided assume no positions are masked
-        if 'mask_positions' in batch:
-            mask_positions = batch['mask_positions'].to(device)  # [B, n_digit]
-        else:
-            mask_positions = torch.zeros(B, n_digit, device=device)
-        
-        # Cross-KV cache optimization: compute once in the first step and reuse from past_key_values
-        encoder_kv_list = None
-        
-        if past_key_values is None and use_cache:
-            # First step: precompute cross-attention KV for each layer
-            encoder_kv_list = []
-            for blk in self.decoder_blocks:
-                with torch.no_grad():
-                    kv_proj = blk.cross_attn.qkv(encoder_hidden)  # [B, seq_len, 3*emb_dim]
-                    k = kv_proj[..., self.n_embd:2*self.n_embd]  # [B, seq_len, emb_dim]
-                    v = kv_proj[..., 2*self.n_embd:]              # [B, seq_len, emb_dim]
-                    layer_kv = torch.cat([k, v], dim=-1)  # [B, seq_len, 2*emb_dim]
-                encoder_kv_list.append(layer_kv)
-        elif past_key_values is not None:
-            # Subsequent steps: extract cross-KV from past_key_values to realize true cache reuse
-            encoder_kv_list = []
-            for layer_cache in past_key_values:
-                if layer_cache is not None and len(layer_cache) >= 2:
-                    _, cross_kv = layer_cache
-                    if cross_kv is not None:
-                        cross_key, cross_value = cross_kv
-                        layer_kv = torch.cat([cross_key, cross_value], dim=-1)
-                        encoder_kv_list.append(layer_kv)
-                    else:
-                        encoder_kv_list.append(None)
-                else:
-                    encoder_kv_list.append(None)
-        
-        # Construct decoder input embeddings
-        decoder_emb = torch.zeros(B, n_digit, self.n_embd, device=device)
-        
-        for d in range(n_digit):
-            # Get token IDs for current digit and clamp for safety
-            token_ids = decoder_input_ids[:, d] + self.tokenizer_sid_offset + d * self.codebook_size
-            token_ids = torch.clamp(token_ids, 0, self.vocab_size - 1)
-            token_emb = self.embedding(token_ids)  # [B, emb_dim]
-            
-            # Get mask embedding for current digit
-            mask_emb = self.mask_emb_table.weight[d]  # [emb_dim] - no extra tensor creation
-            mask_emb = mask_emb.unsqueeze(0).expand(B, -1)  # [B, emb_dim]
-            
-            # Choose embedding based on mask_positions
-            is_masked = mask_positions[:, d].unsqueeze(-1)  # [B, 1]
-            decoder_emb[:, d, :] = torch.where(is_masked.bool(), mask_emb, token_emb)
-        
-        # Remove positional encoding: decoder uses masks only and does not require positional encodings
-        decoder_emb = self.drop(decoder_emb)
-        
-        # Pass through decoder blocks with KV cache support
-        decoder_hidden = decoder_emb
-        present_key_values = []
-        
-        for i, block in enumerate(self.decoder_blocks):
-            # Get the past_key_value for the current layer
-            layer_past = past_key_values[i] if past_key_values is not None else None
-            
-            # Pass precomputed cross-KV to enable cache reuse
-            current_cross_kv = encoder_kv_list[i] if encoder_kv_list is not None else None
-            
-            block_output = block(
-                decoder_hidden, 
-                encoder_hidden=encoder_hidden,     # still pass H for fallback
-                past_key_value=layer_past,
-                use_cache=use_cache,
-                cross_key_value=current_cross_kv   # only passed on the first call
-            )
-            decoder_hidden = block_output['hidden_states']
-            
-            # Collect new key-value cache
-            if use_cache:
-                layer_present = block_output.get('present_key_value')
-                if layer_present is not None and len(layer_present) >= 2:
-                    self_present, cross_present = layer_present
-                    # ensure cross_present stores separated K and V for next cache use
-                    if cross_present is not None:
-                        # cross_present should be in (K, V) format
-                        layer_kv = encoder_kv_list[i] if encoder_kv_list is not None else None
-                        if layer_kv is not None:
-                            k, v = layer_kv.chunk(2, dim=-1)  # separate K and V
-                            cross_present = (k, v)  # save separated format for next cache use
-                    present_key_values.append((self_present, cross_present))
-                else:
-                    present_key_values.append(layer_present)
-        
-        # If not using cache, set to None
-        if not use_cache:
-            present_key_values = None
-        
-        decoder_hidden = self.ln_f(decoder_hidden)  # [B, n_digit, emb_dim]
-        
-        # Compute logits for the specified digit
-        if digit is not None:
-            logits = self._compute_digit_logits(decoder_hidden[:, digit, :], digit=digit)
-        else:
-            # If digit not specified, compute logits for all positions
-            logits = []
-            for d in range(n_digit):
-                logits_d = self._compute_digit_logits(decoder_hidden[:, d, :], digit=d)
-                logits.append(logits_d)
-            logits = torch.stack(logits, dim=1)  # [B, n_digit, codebook_size]
-        
-        output = ModelOutput()
-        output.hidden_states = decoder_hidden
-        output.logits = logits
-        output.past_key_values = present_key_values
-        
-        return output
 
-    def _init_weights(self, module):
-        """Initialize the weights"""
-        if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
-        elif isinstance(module, (nn.LayerNorm, nn.RMSNorm)):
-            # LayerNorm: has bias; RMSNorm: only weight (no bias)
-            if hasattr(module, "bias") and module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-            if hasattr(module, "weight") and module.weight is not None:
-                torch.nn.init.ones_(module.weight)
-        # Note: if output_adapter is Identity(), no initialization required
+        return self.forward_decoder_only(
+            decoder_input_ids=batch['decoder_input_ids'].to(device),
+            encoder_hidden=batch['encoder_hidden'].to(device),
+            mask_positions=batch['mask_positions'].to(device) if batch.get('mask_positions', None) is not None else None,
+            digit=digit, past_key_values=past_key_values, use_cache=use_cache)
