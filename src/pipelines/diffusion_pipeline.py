@@ -61,12 +61,14 @@ class DiffusionPipeline(L.LightningModule):
         # obtain encoder outputs
         encoder_hidden = self.model.encode(batch)
 
+        ablate_decode_config = self.config.get('ablate_decode', {})
+
         # routing: ablation 1/2/3 steps (confidence-only)
-        if mode.startswith("confidence_s") and bool(self.config.get('ablate_decode', {}).get('enabled', False)):
+        if mode.startswith("confidence_s") and bool(ablate_decode_config.get('enabled', False)):
             try:
                 steps = int(mode.split("confidence_s")[-1])
             except Exception:
-                steps = int(self.config.get('ablate_decode', {}).get('steps_default', 3))
+                steps = int(ablate_decode_config.get('steps_default', 3))
             if steps < 4:
                 return decode_ablate_confidence(
                     model=self.model,
@@ -74,6 +76,8 @@ class DiffusionPipeline(L.LightningModule):
                     tokenizer=self.tokenizer,
                     steps=steps,
                     n_return_sequences=n_return_sequences,
+                    vectorized_beam_search=self.config.get('vectorized_beam_search', {}),
+                    ablate_decode_config=ablate_decode_config,
                 )
             
         # fallback: unknown mode

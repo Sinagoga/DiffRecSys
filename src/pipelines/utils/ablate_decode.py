@@ -16,7 +16,8 @@ def decode_ablate_confidence(
     n_return_sequences: int,
 
     current_split: str = None,
-    config: dict = {},
+    vectorized_beam_search: dict = {},
+    ablate_decode_config: dict = {},
 ) -> torch.Tensor:
     """
     Confidence-driven ablation decoding with 1/2/3 steps:
@@ -33,7 +34,7 @@ def decode_ablate_confidence(
     VOC = model.codebook_size
 
     # Read shared beam search configuration
-    beam_cfg = config.get('vectorized_beam_search', {})
+    beam_cfg = vectorized_beam_search
     split = current_split or 'val'
 
     def _as_int(d, k, default):
@@ -51,7 +52,7 @@ def decode_ablate_confidence(
     NEG_INF = float(beam_cfg.get(neg_key, -10000.0 if 'fp16' in neg_key else -1.0e9))
 
     # Ablation-specific overrides
-    ab_cfg = config.get('ablate_decode', {}) or {}
+    ab_cfg = ablate_decode_config
     if 'beam' in ab_cfg and isinstance(ab_cfg['beam'], dict) and split in ab_cfg['beam']:
         BEAM_ACT = int(ab_cfg['beam'][split].get('beam_act', BEAM_ACT))
     per_digit_topL = int(ab_cfg.get('per_digit_topk') or BEAM_ACT)
