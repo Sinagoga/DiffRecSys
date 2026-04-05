@@ -1,7 +1,6 @@
 import logging
 import random
 
-import torchvision
 from torch.utils.data import Dataset
 
 logger = logging.getLogger(__name__)
@@ -21,7 +20,7 @@ class BaseDataset(Dataset):
         index,
         limit=None,
         shuffle_index=False,
-        # instance_transforms=None,
+        instance_transforms=None,
     ):
         """
         Args:
@@ -41,7 +40,9 @@ class BaseDataset(Dataset):
 
         self._index: list[dict] = index
 
-        # self.instance_transforms = instance_transforms
+        self.instance_transforms = instance_transforms
+
+        assert self.instance_transforms is None, "Instance transforms are not implemented yet. Please set instance_transforms to None."
 
     def __getitem__(self, ind):
         """
@@ -70,10 +71,6 @@ class BaseDataset(Dataset):
         """
         return len(self._index)
 
-    def load_image(self, path):
-        image_tensor = torchvision.io.read_image(path)
-        return image_tensor
-
     def preprocess_data(self, instance_data):
         """
         Preprocess data with instance transforms.
@@ -88,13 +85,12 @@ class BaseDataset(Dataset):
                 (a single dataset element) (possibly transformed via
                 instance transform).
         """
-        # TODO: Add instance transforms when necessary.
-        # if self.instance_transforms is not None:
-        #     for transform_name in self.instance_transforms.keys():
-        #         instance_data[transform_name] = self.instance_transforms[
-        #             transform_name
-        #         ](instance_data[transform_name])
-        # return instance_data
+        if self.instance_transforms is not None:
+            for transform_name in self.instance_transforms.keys():
+                instance_data[transform_name] = self.instance_transforms[
+                    transform_name
+                ](instance_data[transform_name])
+        return instance_data
 
     @staticmethod
     def _assert_index_is_valid(index):

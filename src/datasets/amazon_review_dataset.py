@@ -8,7 +8,7 @@ from collections import defaultdict
 
 from tqdm.auto import tqdm
 
-from src.datasets.base_dataset import BaseDataset
+from src.datasets.base_dataset import ExtendedBaseDataset
 from src.datasets.data_utils import download_file, clean_text
 
 
@@ -44,7 +44,7 @@ AMAZON_REVIEW_CATEGORIES = [
 ]
 
 
-class AmazonReviewDataset(BaseDataset):
+class AmazonReviewDataset(ExtendedBaseDataset):
     def __init__(
         self,
         category: str,
@@ -55,6 +55,8 @@ class AmazonReviewDataset(BaseDataset):
         leave_one_out: bool = True,
         max_history_length: Optional[int] = None,
         min_history_length: Optional[int] = None,
+
+        instance_transforms=None,
     ):
         """
         Args:
@@ -62,12 +64,18 @@ class AmazonReviewDataset(BaseDataset):
             category: Dataset category, one of AMAZON_REVIEW_CATEGORIES.
             cache_dir: Directory to store the raw and processed data.
             limit: If not None, limit the total number of elements.
+
+            leave_one_out: Whether to use the leave-one-out strategy for splitting.
+            max_history_length: Maximum length of the user history to consider.
+            min_history_length: Minimum length of the user history to consider.
+
+            instance_transforms: dict, containing transforms to apply to each instance of the dataset (e.g., text processing transforms to apply to the metadata).
         """
         assert part in ["train", "val"], (
             f"Part '{part}' is not recognized."
         )
         assert category in AMAZON_REVIEW_CATEGORIES, (
-            f"Category '{category}' is not is not a part of {AMAZON_REVIEW_CATEGORIES}."
+            f"Category '{category}' is not a part of {AMAZON_REVIEW_CATEGORIES}."
         )
 
         self.part = part
@@ -81,13 +89,19 @@ class AmazonReviewDataset(BaseDataset):
         self.processed_data_dir.mkdir(parents=True, exist_ok=True)
 
         all_item_seqs, self.id_mapping, self.item2meta = self._download_and_process_raw()
-        index = self._prepare_split(all_item_seqs, split=part, leave_one_out=leave_one_out, max_history_length=max_history_length, min_history_length=min_history_length)
+        index = self._prepare_split(
+            all_item_seqs,
+            split=part,
+            leave_one_out=leave_one_out,
+            max_history_length=max_history_length,
+            min_history_length=min_history_length
+        )
 
         super().__init__(
             index=index,
             limit=limit,
             shuffle_index=part == "train",
-            # instance_transforms=None,
+            instance_transforms=instance_transforms,
         )
 
     def _download_raw(self, path: Path, category: str, section: str = 'reviews') -> Path:
