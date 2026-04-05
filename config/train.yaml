@@ -1,7 +1,7 @@
 defaults:
   - model: diffgrm
   - tokenizer: opq
-  - metrics: ...
+  - metrics: ranking
   - datasets: amazon
   - dataloader: stable-large
   - _self_
@@ -13,7 +13,7 @@ global_setings:
   override: True
   model_transforms: []
 
-  monitor_metric: "val_Acc_Top_1"
+  monitor_metric: "val_Val@10"
   monitor_mode: "max"
 
 pretrain_tokenizer: True  # FIXME
@@ -100,7 +100,7 @@ trainer:
       mode: ${global_setings.monitor_mode}
       patience: 15
 
-extra:
+extra: # Currently unused
   share_embeddings: true
 
   # ─── New: beam modes to run in val/test stages ──────────────────────
@@ -125,9 +125,6 @@ extra:
   eval_interval: 1     # evaluate every N epochs
   eval_start_epoch: 20 # start evaluation at epoch N
   min_delta: 0.0       # improvement threshold
-  topk: [5,10]
-  metrics: [ndcg,recall]
-  val_metric: weighted_score  # weighted_score=0.8*ndcg_10 + 0.2*recall_10
 
   # ── Auto mask schedule (off by default) ───────────────────────────
   mask_schedule:

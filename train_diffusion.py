@@ -67,6 +67,7 @@ def main(config):
         model=model,
         optimizer=optimizer,
         scheduler=scheduler,
+        metrics=metrics,
     )
 
     trainer = instantiate(config.trainer)
