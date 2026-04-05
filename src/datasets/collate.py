@@ -73,6 +73,7 @@ def collate_fn_val(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
     }
 
 
+# TODO: This version should works faster, but have not been tested yet.
 def collate_fn(dataset_items: list[dict]):
     """
     Collate and pad fields in the dataset items.

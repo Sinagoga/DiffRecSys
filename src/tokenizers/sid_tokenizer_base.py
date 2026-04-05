@@ -3,6 +3,7 @@ import os
 import math
 import json
 import pickle
+import logging
 
 import numpy as np
 
@@ -13,11 +14,16 @@ from sentence_transformers import SentenceTransformer
 from src.datasets.base_dataset import BaseDataset as AbstractDataset
 from src.tokenizers.abstract_tokenizer import AbstractTokenizer
 
+logger = logging.getLogger(__name__)
+
 
 class SIDTokenizerBase(AbstractTokenizer):
     """Base class for SID-based tokenizers (PQ / RQ-KMeans / Random)."""
 
-    def __init__(self, config: dict):
+    def __init__(
+            self,
+            config: dict
+        ):
         # Provide defaults to avoid KeyError
         config.setdefault('device', 'cuda' if torch.cuda.is_available() else 'cpu')
         config.setdefault('num_proc', 1)
@@ -36,7 +42,7 @@ class SIDTokenizerBase(AbstractTokenizer):
 
         # Initialize quantizer-specific configuration (index factory, tags, etc.)
         self._init_index_factory()
-        self.logger.info(f'[TOKENIZER] Index factory: {getattr(self, "index_factory", None)}')
+        logger.info(f'[TOKENIZER] Index factory: {getattr(self, "index_factory", None)}')
 
         # Create reverse mapping for inference (if not already created)
         if not hasattr(self, 'tokens2item'):
@@ -140,8 +146,8 @@ class SIDTokenizerBase(AbstractTokenizer):
         # Ensure mask size matches sentence embeddings
         # sent_embs contains items with item_id in [1, n_items-1]
         n_sent_embs = len(item2id) - 1  # Matches range(1, dataset.n_items) in _encode_sent_emb
-        self.logger.info(f'[TOKENIZER] Items for training: {len(items_for_training)} of {n_sent_embs}')
-        self.logger.info(f'[TOKENIZER] Training items sample: {list(items_for_training)[:10]}')
+        logger.info(f'[TOKENIZER] Items for training: {len(items_for_training)} of {n_sent_embs}')
+        logger.info(f'[TOKENIZER] Training items sample: {list(items_for_training)[:10]}')
 
         mask = np.zeros(n_sent_embs, dtype=bool)
         for item in items_for_training:
@@ -149,7 +155,7 @@ class SIDTokenizerBase(AbstractTokenizer):
             if 1 <= item_id < len(item2id):  # Ensure item_id is in valid range
                 mask[item_id - 1] = True  # Convert to 0-based index
 
-        self.logger.info(f'[TOKENIZER] Mask shape: {mask.shape}, True count: {np.sum(mask)}')
+        logger.info(f'[TOKENIZER] Mask shape: {mask.shape}, True count: {np.sum(mask)}')
         return mask
 
     def _sem_ids_to_tokens(self, item2sem_ids: dict) -> dict:
@@ -212,15 +218,15 @@ class SIDTokenizerBase(AbstractTokenizer):
         # 🚀 Generate or load quantization results
         if force_regenerate or not os.path.exists(sem_ids_path):
             if force_regenerate:
-                self.logger.info(f'[TOKENIZER] Force regenerating quantization results ({self.index_factory})...')
+                logger.info(f'[TOKENIZER] Force regenerating quantization results ({self.index_factory})...')
             else:
-                self.logger.info(f'[TOKENIZER] Quantization results not found, generating ({self.index_factory})...')
+                logger.info(f'[TOKENIZER] Quantization results not found, generating ({self.index_factory})...')
             training_item_mask = self._get_items_for_training(dataset)
             self._generate_semantic_ids(sent_embs, sem_ids_path, training_item_mask)
         else:
-            self.logger.info(f'[TOKENIZER] Using existing quantization results from {sem_ids_path}')
+            logger.info(f'[TOKENIZER] Using existing quantization results from {sem_ids_path}')
 
-        self.logger.info(f'[TOKENIZER] Loading semantic IDs from {sem_ids_path}...')
+        logger.info(f'[TOKENIZER] Loading semantic IDs from {sem_ids_path}...')
         item2sem_ids = json.load(open(sem_ids_path, 'r'))
         item2tokens = self._sem_ids_to_tokens(item2sem_ids)
 
@@ -233,14 +239,14 @@ class SIDTokenizerBase(AbstractTokenizer):
         if force_regenerate:
             # When force regenerating, ignore old files so the logic below will re-save them
             fwd_exists = inv_exists = False
-            self.logger.info(f'[TOKENIZER] Force regenerate enabled, ignoring existing mapping files')
+            logger.info(f'[TOKENIZER] Force regenerate enabled, ignoring existing mapping files')
         else:
             fwd_exists = os.path.exists(fwd_path)
             inv_exists = os.path.exists(inv_path)
 
         if fwd_exists and inv_exists:
             # ---------- ① Files exist ----------
-            self.logger.info(f'[TOKENIZER] Loading existing mappings for tag: {map_tag} from {fwd_path}')
+            logger.info(f'[TOKENIZER] Loading existing mappings for tag: {map_tag} from {fwd_path}')
 
             # Reconstruct item2tokens mapping
             item_id2tokens = np.load(fwd_path)
@@ -254,13 +260,13 @@ class SIDTokenizerBase(AbstractTokenizer):
             with open(inv_path, 'rb') as f:
                 self.tokens2item = pickle.load(f)
 
-            self.logger.info(f'[TOKENIZER] Successfully loaded {len(item2tokens)} item mappings')
+            logger.info(f'[TOKENIZER] Successfully loaded {len(item2tokens)} item mappings')
         else:
             # ---------- ② Files absent or force regenerate; need to regenerate ----------
             if force_regenerate:
-                self.logger.info(f'[TOKENIZER] Force regenerate enabled, generating new mappings')
+                logger.info(f'[TOKENIZER] Force regenerate enabled, generating new mappings')
             else:
-                self.logger.info(f'[TOKENIZER] No existing mappings found for {self.n_digit}-digit, will generate new ones')
+                logger.info(f'[TOKENIZER] No existing mappings found for {self.n_digit}-digit, will generate new ones')
 
             # Whether files are missing or force regenerate is enabled, save new item2tokens
             self.item2tokens = item2tokens
@@ -314,8 +320,8 @@ class SIDTokenizerBase(AbstractTokenizer):
         with open(os.path.join(cache_dir, f'tokens2item_{map_tag}.pkl'), 'wb') as f:
             pickle.dump(self.tokens2item, f)
 
-        self.logger.info(f'[TOKENIZER] Saved mappings with tag: {map_tag} to {cache_dir}')
-        self.logger.info(f'[TOKENIZER] Files: item_id2tokens_{map_tag}.npy, tokens2item_{map_tag}.pkl')
+        logger.info(f'[TOKENIZER] Saved mappings with tag: {map_tag} to {cache_dir}')
+        logger.info(f'[TOKENIZER] Files: item_id2tokens_{map_tag}.npy, tokens2item_{map_tag}.pkl')
 
     def encode_history(self, item_seq, max_len=None):
         """Encode user history sequence and return a padding mask."""
@@ -462,7 +468,7 @@ class SIDTokenizerBase(AbstractTokenizer):
         }
         with open(path, 'wb') as f:
             pickle.dump(state, f)
-        self.logger.info(f'[TOKENIZER] Saved tokenizer state to {path}')
+        logger.info(f'[TOKENIZER] Saved tokenizer state to {path}')
 
     def load(self, path):
         """Load tokenizer state from a file."""
@@ -471,4 +477,4 @@ class SIDTokenizerBase(AbstractTokenizer):
         self.item2tokens = state['item2tokens']
         self.tokens2item = state['tokens2item']
         self.config = state['config']
-        self.logger.info(f'[TOKENIZER] Loaded tokenizer state from {path}')
+        logger.info(f'[TOKENIZER] Loaded tokenizer state from {path}')

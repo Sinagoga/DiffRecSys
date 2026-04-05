@@ -1,12 +1,5 @@
-import logging
-
-
-logger = logging.getLogger(__name__)
-
-
 class AbstractTokenizer:
     def __init__(self, config: dict):
-        self.logger = logger
         self.config = config
         self.eos_token = None
 

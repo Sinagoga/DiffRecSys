@@ -1,5 +1,6 @@
 import json
 import os
+import logging
 
 import numpy as np
 
@@ -8,6 +9,8 @@ from sklearn.decomposition import PCA
 import faiss
 
 from src.tokenizers.sid_tokenizer_base import SIDTokenizerBase
+
+logger = logging.getLogger(__name__)
 
 
 class PQTokenizer(SIDTokenizerBase):
@@ -24,18 +27,18 @@ class PQTokenizer(SIDTokenizerBase):
         """Prepare sentence embeddings for PQ/OPQ quantization."""
         # opq_pq: allows PCA (same behavior as previous implementation)
         if self.config['sent_emb_pca'] > 0 and os.path.exists(pca_path):
-            self.logger.info(f'[TOKENIZER] Loading PCA-ed sentence embeddings from {pca_path}...')
+            logger.info(f'[TOKENIZER] Loading PCA-ed sentence embeddings from {pca_path}...')
             return np.fromfile(pca_path, dtype=np.float32).reshape(
                 -1, self.config['sent_emb_pca']
             )
 
         if os.path.exists(raw_path):
-            self.logger.info(f'[TOKENIZER] Loading RAW sentence embeddings from {raw_path}...')
+            logger.info(f'[TOKENIZER] Loading RAW sentence embeddings from {raw_path}...')
             raw_embs = np.fromfile(raw_path, dtype=np.float32).reshape(
                 -1, self.config['sent_emb_dim']
             )
             if self.config['sent_emb_pca'] > 0:
-                self.logger.info(f'[TOKENIZER] Applying PCA to sentence embeddings...')
+                logger.info(f'[TOKENIZER] Applying PCA to sentence embeddings...')
 
                 pca = PCA(n_components=self.config['sent_emb_pca'], whiten=True)
                 training_item_mask = self._get_items_for_training(dataset)
@@ -50,10 +53,10 @@ class PQTokenizer(SIDTokenizerBase):
             return raw_embs
 
         # Otherwise, encode from scratch
-        self.logger.info(f'[TOKENIZER] Encoding sentence embeddings...')
+        logger.info(f'[TOKENIZER] Encoding sentence embeddings...')
         raw_embs = self._encode_sent_emb(dataset, raw_path)
         if self.config['sent_emb_pca'] > 0:
-            self.logger.info(f'[TOKENIZER] Applying PCA to sentence embeddings...')
+            logger.info(f'[TOKENIZER] Applying PCA to sentence embeddings...')
 
             pca = PCA(n_components=self.config['sent_emb_pca'], whiten=True)
             training_item_mask = self._get_items_for_training(dataset)
@@ -70,9 +73,9 @@ class PQTokenizer(SIDTokenizerBase):
     def _generate_semantic_ids(self, sent_embs, sem_ids_path, train_mask):
         """Generate semantic IDs using OPQ/PQ."""
 
-        self.logger.info(f'[TOKENIZER] sent_embs shape: {sent_embs.shape}')
-        self.logger.info(f'[TOKENIZER] train_mask shape: {train_mask.shape}')
-        self.logger.info(f'[TOKENIZER] train_mask True count: {np.sum(train_mask)}')
+        logger.info(f'[TOKENIZER] sent_embs shape: {sent_embs.shape}')
+        logger.info(f'[TOKENIZER] train_mask shape: {train_mask.shape}')
+        logger.info(f'[TOKENIZER] train_mask True count: {np.sum(train_mask)}')
 
         # Build index
         if self.config['opq_use_gpu']:
@@ -86,7 +89,7 @@ class PQTokenizer(SIDTokenizerBase):
             self.index_factory,
             faiss.METRIC_INNER_PRODUCT
         )
-        self.logger.info(f'[TOKENIZER] Training index...')
+        logger.info(f'[TOKENIZER] Training index...')
         if self.config['opq_use_gpu']:
             index = faiss.index_cpu_to_gpu(res, self.config['opq_gpu_id'], index, co)
         index.train(sent_embs[train_mask])
@@ -125,7 +128,7 @@ class PQTokenizer(SIDTokenizerBase):
             item = self.id2item[int(iid0) + 1]
             item2sem_ids[item] = tuple(int(v) for v in faiss_sem_ids[pos])
 
-        self.logger.info(f'[TOKENIZER] Saving semantic IDs to {sem_ids_path}...')
+        logger.info(f'[TOKENIZER] Saving semantic IDs to {sem_ids_path}...')
         os.makedirs(os.path.dirname(sem_ids_path), exist_ok=True)
         with open(sem_ids_path, 'w') as f:
             json.dump(item2sem_ids, f)

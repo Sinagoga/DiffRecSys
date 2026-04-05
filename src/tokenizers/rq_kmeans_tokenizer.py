@@ -1,11 +1,14 @@
 import os
 import json
+import logging
 
 import numpy as np
 
 import faiss
 
 from src.tokenizers.sid_tokenizer_base import SIDTokenizerBase
+
+logger = logging.getLogger(__name__)
 
 
 class RQKMeansTokenizer(SIDTokenizerBase):
@@ -21,12 +24,12 @@ class RQKMeansTokenizer(SIDTokenizerBase):
     def _prepare_sentence_embeddings(self, dataset, raw_path: str, pca_path: str):
         """Prepare sentence embeddings for RQ-KMeans (raw only, no PCA)."""
         if os.path.exists(raw_path):
-            self.logger.info(f'[TOKENIZER] Loading RAW sentence embeddings from {raw_path}...')
+            logger.info(f'[TOKENIZER] Loading RAW sentence embeddings from {raw_path}...')
             return np.fromfile(raw_path, dtype=np.float32).reshape(
                 -1, self.config['sent_emb_dim']
             )
 
-        self.logger.info(f'[TOKENIZER] Encoding sentence embeddings (RAW, no PCA for RQ-KMeans)...')
+        logger.info(f'[TOKENIZER] Encoding sentence embeddings (RAW, no PCA for RQ-KMeans)...')
         return self._encode_sent_emb(dataset, raw_path)
 
     def _generate_semantic_ids(self, sent_embs, sem_ids_path, train_mask):
