@@ -219,3 +219,4 @@ __marimo__/
 cache/
 outputs/
 saved/
+wandb/

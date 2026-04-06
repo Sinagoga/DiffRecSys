@@ -16,7 +16,7 @@ global_setings:
   monitor_metric: "val_Val@10"
   monitor_mode: "max"
 
-  tokenizer_state_path: ${global_setings.save_dir}/tokenizer_state/
+  tokenizer_state_path: ${global_setings.save_dir}/tokenizer_state.pkl
 
 training_pipeline:
   _target_: src.pipelines.diffusion_pipeline.DiffusionPipeline
