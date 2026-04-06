@@ -14,9 +14,8 @@ warnings.filterwarnings("ignore", category=UserWarning)
 @hydra.main(version_base=None, config_path="config", config_name="train")
 def main(config):
     """
-    Main script for training. Instantiates the model, optimizer, scheduler,
-    metrics, logger, writer, and dataloaders. Runs Trainer to train and
-    evaluate the model.
+    Main script for diffusion training. Loads a previously trained tokenizer,
+    instantiates model/pipeline/trainer, and runs training/evaluation.
 
     Args:
         config (DictConfig): hydra experiment config.
@@ -32,14 +31,8 @@ def main(config):
     # setup data_loader instances
     # batch_transforms should be put on device
     datasets = get_datasets(config)
-
-    if config.get("pretrain_tokenizer", False):
-        # Pretrain the tokenizer on the training dataset
-        train_dataset = datasets.get("train")
-        if train_dataset is not None:
-            tokenizer.fit(train_dataset)
-        else:
-            raise ValueError("Training dataset not found for tokenizer pretraining.")
+    
+    tokenizer.load(config.global_setings.tokenizer_state_path)
 
     dataloaders = get_dataloaders(config, datasets, tokenization=tokenizer.tokenize)
     # batch_transforms = instantiate(config.transforms.batch_transforms)
@@ -78,7 +71,7 @@ def main(config):
 
     trainer.fit(
         model=training_pipeline,
-        train_dataloaders=dataloaders["train"],
+        train_dataloaders=dataloaders.get("train"),
         val_dataloaders=dataloaders.get("val")
     )
 
