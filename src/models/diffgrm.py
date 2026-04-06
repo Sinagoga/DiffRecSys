@@ -900,6 +900,8 @@ class DIFF_GRM(AbstractModel):
         all_mask_positions = []
         all_encoder_hidden = []
         
+        B = decoder_input_ids.shape[0]
+        
         if self.masking_strategy == 'sequential':
             # Sequential multi-view: support multiple parallel paths
             for p in range(self.sequential_paths):  # generate multiple parallel paths

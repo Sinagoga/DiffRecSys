@@ -62,6 +62,8 @@ class BaseDataset(Dataset):
         instance_data = self._index[ind]
 
         instance_data = self.preprocess_data(instance_data)
+        
+        assert instance_data is not None
 
         return instance_data
 

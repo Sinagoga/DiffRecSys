@@ -8,14 +8,14 @@ from collections import defaultdict
 
 from tqdm.auto import tqdm
 
-from src.datasets.base_dataset import ExtendedBaseDataset
+from src.datasets.base_recommendation_dataset import BaseRecommendationDataset
 from src.datasets.data_utils import download_file, clean_text
 
 
 logger = logging.getLogger(__name__)
 
 
-AMAZON_REVIEW_DATASET_URL = "https://snap.stanford.edu/data/amazon/productGraph/categoryFiles/{section}_{category}{'_5' if section == 'reviews' else ''}.json.gz"
+AMAZON_REVIEW_DATASET_URL = "https://snap.stanford.edu/data/amazon/productGraph/categoryFiles/{section}_{category}{suffix}.json.gz"
 AMAZON_REVIEW_CATEGORIES = [
     'Books',
     'Electronics',
@@ -44,13 +44,14 @@ AMAZON_REVIEW_CATEGORIES = [
 ]
 
 
-class AmazonReviewDataset(ExtendedBaseDataset):
+class AmazonReviewDataset(BaseRecommendationDataset):
     def __init__(
         self,
         category: str,
         part: str = "train",
-        cache_dir: Path = "./cache/AmazonReviews2014/",
+        cache_dir: str = "./cache/AmazonReviews2014/",
         limit: Optional[int] = None,
+        meta_processing: Optional[str] = None,
 
         leave_one_out: bool = True,
         max_history_length: Optional[int] = None,
@@ -80,7 +81,9 @@ class AmazonReviewDataset(ExtendedBaseDataset):
 
         self.part = part
         self.category = category
-        self.cache_dir = cache_dir / f"{category}_{part}"
+        self.cache_dir = Path(cache_dir) / f"{category}_{part}"
+        
+        self.meta_processing = meta_processing or "none"
         
         self.raw_data_dir = self.cache_dir / 'raw'
         self.processed_data_dir = self.cache_dir / 'processed'
@@ -88,7 +91,7 @@ class AmazonReviewDataset(ExtendedBaseDataset):
         self.raw_data_dir.mkdir(parents=True, exist_ok=True)
         self.processed_data_dir.mkdir(parents=True, exist_ok=True)
 
-        all_item_seqs, self.id_mapping, self.item2meta = self._download_and_process_raw()
+        all_item_seqs, id_mapping, item2meta = self._download_and_process_raw()
         index = self._prepare_split(
             all_item_seqs,
             split=part,
@@ -100,6 +103,8 @@ class AmazonReviewDataset(ExtendedBaseDataset):
         super().__init__(
             index=index,
             limit=limit,
+            id_mapping=id_mapping,
+            item2meta=item2meta,
             shuffle_index=part == "train",
             instance_transforms=instance_transforms,
         )
@@ -107,7 +112,8 @@ class AmazonReviewDataset(ExtendedBaseDataset):
     def _download_raw(self, path: Path, category: str, section: str = 'reviews') -> Path:
         url = AMAZON_REVIEW_DATASET_URL.format(
             section=section,
-            category=category
+            category=category,
+            suffix='_5' if section == 'reviews' else '',
         )
         local_filepath = path / Path(url).name
         if not os.path.exists(local_filepath):
@@ -192,13 +198,15 @@ class AmazonReviewDataset(ExtendedBaseDataset):
                 json.dump(item_seqs, f)
             with open(id_mapping_file, 'w') as f:
                 json.dump(id_mapping, f)
-    
+                
         return item_seqs, id_mapping
 
     def _process_meta(
         self,
         input_path: Path,
-        output_path: Path
+        output_path: Path,
+        
+        id_mapping: dict,
     ) -> Optional[dict]:
         """
         Process metadata based on the specified process type.
@@ -216,20 +224,25 @@ class AmazonReviewDataset(ExtendedBaseDataset):
 
         def load_metadata(
             path: Path,
-            item_asins: set
+            item_asins: set,
+            id_mapping: dict,
         ) -> dict:
             data = {}
             
             with gzip.open(path, 'rt', encoding='utf-8') as f:
                 for line in tqdm(f, desc='Loading metadata'):
-                    info = json.loads(line)
+                    try:
+                        info = json.loads(line)
+                    except json.JSONDecodeError:
+                        info = eval(line)  # FIXME: Fallback for non-standard JSON lines
                     if info['asin'] in item_asins:
                         data[info['asin']] = info
             
             return data
 
         def extract_meta_sentences(
-            metadata: dict
+            metadata: dict,
+            id_mapping: dict,
         ) -> dict:
             def sent_process(raw: Optional[str | float | list]) -> str:
                 if raw is None:
@@ -266,9 +279,9 @@ class AmazonReviewDataset(ExtendedBaseDataset):
                 item2meta[item] = ' '.join(meta_parts)
             return item2meta
 
-        process_mode = self.config['metadata']
+        process_mode = self.meta_processing
         meta_file = output_path / f'metadata.{process_mode}.json'
-
+        
         if process_mode == 'none':
             return None
 
@@ -282,12 +295,13 @@ class AmazonReviewDataset(ExtendedBaseDataset):
 
             item2meta = load_metadata(
                 path=input_path,
-                item_asins=set(self.id_mapping['item2id'].keys())
+                item_asins=set(id_mapping['item2id'].keys()),
+                id_mapping=id_mapping,
             )
             if process_mode == 'raw':
                 pass
             elif process_mode == 'sentence':
-                item2meta = extract_meta_sentences(metadata=item2meta)
+                item2meta = extract_meta_sentences(metadata=item2meta, id_mapping=id_mapping)
             else:
                 raise NotImplementedError('Metadata processing type not implemented.')
 
@@ -325,7 +339,8 @@ class AmazonReviewDataset(ExtendedBaseDataset):
         )
         item2meta = self._process_meta(
             input_path=meta_localpath,
-            output_path=self.processed_data_dir
+            output_path=self.processed_data_dir,
+            id_mapping=id_mapping,
         )
 
         return all_item_seqs, id_mapping, item2meta

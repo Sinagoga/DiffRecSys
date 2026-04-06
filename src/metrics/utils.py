@@ -25,7 +25,7 @@ def recall_at_k(pos_index: torch.Tensor, k: int) -> torch.Tensor:
         torch.Tensor: A tensor of shape (batch_size,) containing the Recall@K for each example in the batch.
     """
 
-    return pos_index[:, :k].any(dim=1)
+    return pos_index[:, :k].any(dim=1).float()
 
 def ndcg_at_k(pos_index: torch.Tensor, k: int, use_only_first_hit: bool = False) -> torch.Tensor:
     """

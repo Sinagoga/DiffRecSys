@@ -21,8 +21,8 @@ class AggregationMetric(BaseMetric):
         else:
             self.weights = [1 / len(base_metrics)] * len(base_metrics)
 
-    def __call__(self, logits: Tensor, target: Tensor, **batch):
+    def __call__(self, **batch):
         return sum(
-            metric(logits, target, **batch) * weight
+            metric(**batch) * weight
             for metric, weight in zip(self.base_metrics, self.weights)
         )

@@ -1,5 +1,8 @@
-__target__: src.tokenizers.pq_tokenizer.PQTokenizer
+_target_: src.tokenizers.pq_tokenizer.PQTokenizer
 config:
+  n_digit: 4
+  codebook_size: 256
+
   # Sentence Embedding (for SID generation)
   sent_emb_model: sentence-transformers/sentence-t5-base
   sent_emb_dim: 768

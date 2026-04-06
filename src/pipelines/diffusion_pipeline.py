@@ -8,8 +8,8 @@ from src.tokenizers.abstract_tokenizer import AbstractTokenizer
 from src.metrics.tracker import MetricTracker
 from src.metrics.base_metric import BaseMetric
 
-from pipelines.utils.ablate_decode import decode_ablate_confidence
-from pipelines.utils.beam import fast_beam_search_for_eval
+from src.pipelines.utils.ablate_decode import decode_ablate_confidence
+from src.pipelines.utils.beam import fast_beam_search_for_eval
 
 
 class DiffusionPipeline(L.LightningModule):
@@ -30,17 +30,8 @@ class DiffusionPipeline(L.LightningModule):
         self.config = config
         
         self.metrics = metrics
-        self.train_metrics = MetricTracker(
-            *self.config.writer.loss_names,
-            "grad_norm",
-            *[m.name for m in self.metrics["train"]],
-            writer=self.writer,
-        )
-        self.evaluation_metrics = MetricTracker(
-            *self.config.writer.loss_names,
-            *[m.name for m in self.metrics["inference"]],
-            writer=self.writer,
-        )
+        self.train_metrics = MetricTracker()
+        self.evaluation_metrics = MetricTracker()
 
         # When ablation is enabled, automatically inject confidence_s1/s2/s3 modes to ensure evaluation runs three modes
         if self.config.get('ablate_decode', {}).get('enabled', False):
@@ -76,12 +67,11 @@ class DiffusionPipeline(L.LightningModule):
     
     def validation_step(self, batch, batch_idx):
         preds = self.generate(batch, n_return_sequences=10) # FIXME: hardcoded n_return_sequences for evaluation, can be made configurable
-        results = self.evaluator.calculate_metrics(preds, batch['labels'])
-        
+
         for metric in self.metrics["inference"]:
             self.evaluation_metrics.update(metric.name, metric(preds=preds, **batch))
         
-        return results
+        return self.evaluation_metrics.result()
     
     def on_validation_epoch_end(self):
         for key in self.evaluation_metrics.keys():

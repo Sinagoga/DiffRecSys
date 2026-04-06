@@ -66,6 +66,7 @@ class PQTokenizer(SIDTokenizerBase):
             if self.config.get('normalize_after_pca', True):
                 norms = np.linalg.norm(sent_embs, axis=1, keepdims=True) + 1e-12
                 sent_embs = sent_embs / norms
+            print(sent_embs)
             sent_embs.tofile(pca_path)
             return sent_embs
         return raw_embs

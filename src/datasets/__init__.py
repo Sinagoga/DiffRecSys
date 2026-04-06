@@ -1,4 +1,4 @@
-from datasets.amazon_review_dataset import AmazonReviewDataset
+from src.datasets.amazon_review_dataset import AmazonReviewDataset
 
 __all__ = [
     "AmazonReviewDataset",

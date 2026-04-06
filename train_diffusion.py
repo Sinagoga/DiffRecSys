@@ -11,7 +11,7 @@ from src.utils.init_utils import setup_saving_and_logging
 warnings.filterwarnings("ignore", category=UserWarning)
 
 
-@hydra.main(version_base=None, config_path="config", config_name="baseline")
+@hydra.main(version_base=None, config_path="config", config_name="train")
 def main(config):
     """
     Main script for training. Instantiates the model, optimizer, scheduler,
@@ -42,8 +42,8 @@ def main(config):
             raise ValueError("Training dataset not found for tokenizer pretraining.")
 
     dataloaders = get_dataloaders(config, datasets, tokenization=tokenizer.tokenize)
-    batch_transforms = instantiate(config.transforms.batch_transforms)
-    batch_transforms = move_batch_transforms_to_device(batch_transforms, 'cuda')
+    # batch_transforms = instantiate(config.transforms.batch_transforms)
+    # batch_transforms = move_batch_transforms_to_device(batch_transforms, 'cuda') # FIXME
 
     # build model architecture, then print to console
     model = instantiate(config.model, num_classes=config.get("num_classes", 1000))
@@ -65,11 +65,12 @@ def main(config):
     training_pipeline = instantiate(
         config.training_pipeline,
         model=model,
+        tokenizer=tokenizer,
         optimizer=optimizer,
         scheduler=scheduler,
         metrics=metrics,
     )
-
+    
     trainer = instantiate(config.trainer)
 
     for logger in trainer.loggers:
@@ -77,8 +78,8 @@ def main(config):
 
     trainer.fit(
         model=training_pipeline,
-        train_dataloader=dataloaders["train"],
-        val_dataloader=dataloaders.get("val")
+        train_dataloaders=dataloaders["train"],
+        val_dataloaders=dataloaders.get("val")
     )
 
     for analyzer_config in config.get("analyzers", []):

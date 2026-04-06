@@ -63,7 +63,7 @@ class BaseRecommendationDataset(BaseDataset):
             int: The number of users in the dataset.
         """
         if not self.user2id:
-            return len(set([element.get('user', None) for element in self.index]))
+            return len(set([element.get('user', None) for element in self._index]))
         return len(self.user2id)
 
     @property
@@ -76,7 +76,7 @@ class BaseRecommendationDataset(BaseDataset):
         """
         if not self.item2id:
             return len(set.union(
-                set(element.get('history', []) + [element.get('target', None)]) for element in self.index
+                set(element.get('history', []) + [element.get('target', None)]) for element in self._index
             ))
         return len(self.item2id)
 
@@ -89,7 +89,7 @@ class BaseRecommendationDataset(BaseDataset):
             int: The total number of interactions.
         """
         if not self.all_item_seqs:
-            return len(self.index)
+            return len(self._index)
 
         n_inters = 0
         for user, item_seq in self.all_item_seqs.items():

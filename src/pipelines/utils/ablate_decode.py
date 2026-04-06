@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from src.models.abstract_model import AbstractModel
 from src.tokenizers.abstract_tokenizer import AbstractTokenizer
 
-from .comb_topk import combine_remaining_topk
+from src.pipelines.utils.comb_topk import combine_remaining_topk
 
 
 @torch.no_grad()

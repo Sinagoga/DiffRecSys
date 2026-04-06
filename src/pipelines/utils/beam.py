@@ -8,8 +8,8 @@ import torch
 import torch.nn.functional as F
 
 
-from models.abstract_model import AbstractModel
-from tokenizers.abstract_tokenizer import AbstractTokenizer
+from src.models.abstract_model import AbstractModel
+from src.tokenizers.abstract_tokenizer import AbstractTokenizer
 
 
 def _beam_step_select(mode,

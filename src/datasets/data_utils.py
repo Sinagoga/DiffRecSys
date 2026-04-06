@@ -81,21 +81,24 @@ def get_dataloaders(config, datasets, tokenization=None):
             f"be larger than the dataset length ({len(dataset)})"
         )
 
-        collate_fn = collate_fn_train if dataset_partition == "train" else collate_fn_val
-        if tokenization is not None:
-            collate_fn = lambda batch: collate_fn(tokenization(batch, split=dataset_partition))
+        def get_collate_fn(split): # func to avoid contex binding
+            collate_fn = collate_fn_train if split == "train" else collate_fn_val
+            if tokenization is None:
+                return collate_fn
+            return lambda batch: collate_fn(tokenization(batch, split=split))
 
         partition_dataloader = instantiate(
             dataloader_cfg,
             dataset=dataset,
-            collate_fn=collate_fn,
+            collate_fn=get_collate_fn(dataset_partition),
             drop_last=(dataset_partition == "train"),
             shuffle=(dataset_partition == "train"), # No random access for IterableDatasets
             worker_init_fn=set_worker_seed,
         )
 
         dataloaders[dataset_partition] = partition_dataloader
-
+ 
+    print(dataloaders["train"].collate_fn)
     return dataloaders
 
 

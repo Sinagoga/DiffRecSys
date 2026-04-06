@@ -5,6 +5,7 @@ import secrets
 import shutil
 import string
 import subprocess
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -78,8 +79,6 @@ def saving_init(save_dir, config):
                     "Save directory exists. Change the name or set override=True"
                 )
 
-        save_dir.mkdir(exist_ok=True, parents=True)
-
         if run_id is None:
             run_id = generate_id()
 
@@ -87,6 +86,7 @@ def saving_init(save_dir, config):
         config.trainer.logger[i][run_id_param_name] = run_id
         OmegaConf.set_struct(config, True)
 
+    save_dir.mkdir(exist_ok=True, parents=True)
     OmegaConf.save(config, save_dir / "config.yaml")
 
 
@@ -103,5 +103,5 @@ def setup_saving_and_logging(config):
     """
     append_mode = config.global_setings.get("resume_from") is not None
 
-    saving_init(config.global_setings.save_dir, config)
-    setup_logging(config.global_setings.save_dir, append=append_mode)
+    saving_init(Path(config.global_setings.save_dir), config)
+    setup_logging(Path(config.global_setings.save_dir), append=append_mode)

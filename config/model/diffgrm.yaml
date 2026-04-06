@@ -1,10 +1,10 @@
 _target_: src.models.diffgrm.DIFF_GRM
 
-vocab_size: ...
-sid_offset: ...
+vocab_size: 1027 # FIXME
+sid_offset: 3 # FIXME
 
-n_digit: 4
-codebook_size: 256
+n_digit: ${tokenizer.config.n_digit}
+codebook_size: ${tokenizer.config.codebook_size}
 
 # Model Architecture
 encoder_n_layer: 2

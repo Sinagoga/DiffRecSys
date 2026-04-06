@@ -44,10 +44,6 @@ class SIDTokenizerBase(AbstractTokenizer):
         self._init_index_factory()
         logger.info(f'[TOKENIZER] Index factory: {getattr(self, "index_factory", None)}')
 
-        # Create reverse mapping for inference (if not already created)
-        if not hasattr(self, 'tokens2item'):
-            self.tokens2item = self._create_reverse_mapping()
-
     # -------------------------------------------------------------------------
     # Methods to be implemented by subclasses
     # -------------------------------------------------------------------------
@@ -108,7 +104,7 @@ class SIDTokenizerBase(AbstractTokenizer):
     def _encode_sent_emb(self, dataset: AbstractDataset, output_path: str) -> np.ndarray:
         """Encode sentence embeddings using a Hugging Face SentenceTransformer and normalize vectors."""
         meta_sentences = []
-        for v in dataset.id_mapping['id2item'].values():  # Skip item_id=0 (PAD)
+        for v in dataset.id_mapping['id2item']:  # Skip item_id=0 (PAD)
             if v != "[PAD]":
                 meta_sentences.append(dataset.item2meta[v])
 
@@ -411,12 +407,15 @@ class SIDTokenizerBase(AbstractTokenizer):
             }
 
         example.update(additive)
+        
+        return example
 
     def tokenize(self, batch, split: str):
         """Tokenize the dataset."""
         return [
             self.tokenize_function(example, split=split)
             for example in batch
+            if example is not None # FIXME
         ]
 
     # ====== New: SID→items mapping helpers ======
