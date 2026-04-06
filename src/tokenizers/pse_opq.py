@@ -20,13 +20,19 @@ class PSETokenizer:
 
     def __init__(self, n_digit: int = 10, codebook_size: int = 512,
                  pca_dim: int = 256, disable_opq: bool = False,
-                 use_gpu: bool = False):
+                 use_gpu: str | bool = "auto"):
         self.n_digit = n_digit
         self.codebook_size = codebook_size
         self.n_bits = int(math.log2(codebook_size))
         self.pca_dim = pca_dim
         self.disable_opq = disable_opq
-        self.use_gpu = use_gpu
+        if use_gpu == "auto":
+            self.use_gpu = faiss.get_num_gpus() > 0 and self.n_bits == 8
+        else:
+            self.use_gpu = bool(use_gpu)
+        if self.use_gpu and self.n_bits != 8:
+            print(f"Warning: FAISS GPU only supports PQ8, but n_bits={self.n_bits}. Falling back to CPU.")
+            self.use_gpu = False
         self.index = None
         self.pca = None
         self._trained_dim = None
@@ -110,7 +116,7 @@ class PSETokenizer:
         return codes.astype(np.int32)
 
     def _parse_pq_codes(self, raw_codes: np.ndarray) -> np.ndarray:
-        """Parse packed PQ codes into per-subspace integers.
+        """Parse packed PQ codes into per-subspace integers (vectorized).
 
         Args:
             raw_codes: uint8 array of shape (N, code_size)
@@ -122,31 +128,20 @@ class PSETokenizer:
         n_bits = self.n_bits
 
         if n_bits == 8:
-            # Simple case: each byte is one code
             return raw_codes[:, :self.n_digit].astype(np.int32)
 
-        # General case: use bit reader
+        # Vectorized bit extraction for arbitrary n_bits
+        # Unpack all bytes to individual bits: (N, code_size*8)
+        bits = np.unpackbits(raw_codes, axis=1, bitorder='little')
+
         codes = np.zeros((N, self.n_digit), dtype=np.int32)
-        for i in range(N):
-            bit_offset = 0
-            for d in range(self.n_digit):
-                byte_idx = bit_offset // 8
-                bit_idx = bit_offset % 8
-
-                # Read n_bits starting from bit_offset
-                value = 0
-                bits_read = 0
-                while bits_read < n_bits:
-                    b = byte_idx + (bit_idx + bits_read) // 8
-                    local_bit = (bit_idx + bits_read) % 8
-                    bits_avail = min(8 - local_bit, n_bits - bits_read)
-                    mask = (1 << bits_avail) - 1
-                    chunk = (raw_codes[i, b] >> local_bit) & mask
-                    value |= chunk << bits_read
-                    bits_read += bits_avail
-
-                codes[i, d] = value
-                bit_offset += n_bits
+        for d in range(self.n_digit):
+            start_bit = d * n_bits
+            # Extract n_bits for this digit across all N vectors at once
+            digit_bits = bits[:, start_bit:start_bit + n_bits]  # (N, n_bits)
+            # Convert bits to integer: bit 0 is LSB
+            powers = (1 << np.arange(n_bits, dtype=np.int32))  # (n_bits,)
+            codes[:, d] = digit_bits.astype(np.int32) @ powers
 
         return codes
 

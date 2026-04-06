@@ -103,13 +103,16 @@ class RQKMeans:
 
     def __init__(self, num_hierarchies: int = 10, codebook_width: int = 512,
                  normalize_residuals: bool = True, max_iter: int = 100,
-                 mini_batch_size: int = 10000, device: str = "cpu"):
+                 mini_batch_size: int = 10000, device: str = "auto"):
         self.num_hierarchies = num_hierarchies
         self.codebook_width = codebook_width
         self.normalize_residuals = normalize_residuals
         self.max_iter = max_iter
         self.mini_batch_size = mini_batch_size
-        self.device = device
+        if device == "auto":
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device
         self.kmeans_levels = []
 
     def fit(self, X: np.ndarray):

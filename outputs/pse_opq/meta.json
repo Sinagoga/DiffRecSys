@@ -1,0 +1,7 @@
+{
+  "n_digit": 10,
+  "codebook_size": 512,
+  "pca_dim": 120,
+  "disable_opq": false,
+  "trained_dim": 120
+}

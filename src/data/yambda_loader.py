@@ -37,18 +37,21 @@ def load_yambda_embeddings(config: dict, dry_run: bool = False):
     n_items = data_cfg["n_items"]
     seed = data_cfg["seed"]
 
-    print(f"Loading dataset '{source}' from HuggingFace...")
-    ds = load_dataset(source, split="train", streaming=True)
-    ds = ds.shuffle(seed=seed, buffer_size=20000)
+    print(f"Loading embeddings from '{source}' (data_files='embeddings.parquet')...")
+    ds = load_dataset(source, data_files="embeddings.parquet", split="train")
 
+    # Shuffle and take subset
+    ds = ds.shuffle(seed=seed)
+    if n_items < len(ds):
+        ds = ds.select(range(n_items))
+        print(f"Selected {n_items} items from {len(ds)} total")
+
+    print(f"Extracting embeddings (column='{embed_column}')...")
     embeddings_list = []
     item_ids_list = []
-    for i, row in enumerate(tqdm(ds, total=n_items, desc="Streaming embeddings")):
-        if i >= n_items:
-            break
-        emb = row[embed_column]
-        embeddings_list.append(emb)
-        item_ids_list.append(i)
+    for i, row in enumerate(tqdm(ds, total=len(ds), desc="Reading embeddings")):
+        embeddings_list.append(row[embed_column])
+        item_ids_list.append(row.get("item_id", i))
 
     embeddings = np.array(embeddings_list, dtype=np.float32)
     item_ids = np.array(item_ids_list, dtype=np.uint32)
