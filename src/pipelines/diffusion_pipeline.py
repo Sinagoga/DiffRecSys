@@ -50,7 +50,7 @@ class DiffusionPipeline(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         loss = self.model.calculate_loss(batch)
-        self.log("train_loss", loss)
+        self.log("train_loss", loss, prog_bar=True)
 
         if self.metrics["train"]:
             preds = self.model(batch)
