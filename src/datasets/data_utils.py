@@ -98,7 +98,6 @@ def get_dataloaders(config, datasets, tokenization=None):
 
         dataloaders[dataset_partition] = partition_dataloader
  
-    print(dataloaders["train"].collate_fn)
     return dataloaders
 
 
