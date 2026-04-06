@@ -288,32 +288,20 @@ class Encoder(nn.Module):
         
         # Dropout
         self.drop = nn.Dropout(self.dropout)
-
-    def get_digit_embeddings(self, digit):
+    
+    def get_digits_embeddings(self):
         """
-        Compute logits using shared embedding dot-product.
-
-        Args:
-            hidden_last: (B, d_model) - decoder output hidden state
-            digit: 0..n_digit-1 - codebook position to predict
+        Get the full embedding matrix for all digit positions, used for efficient parallel decoding.
 
         Returns:
-            logits: (B, codebook_size) - predicted logits
+            A list of length n_digit, where each element is a tensor of shape (codebook_size, d_model)
+            containing the embeddings for that digit position.
         """
-        if digit is None:
-            raise ValueError("digit cannot be None; must specify which codebook position to compute")
-        
-        if digit >= self.n_digit:
-            raise ValueError(f"digit={digit} out of range; expected in [0, {self.n_digit-1}]")
-        
-        # 2.1 Extract the corresponding slice of the embedding matrix
-        # token ID layout = [PAD, BOS, EOS, digit0 (codebook_size entries), digit1 (codebook_size entries), ...]
-        start = self.tokenizer_sid_offset + digit * self.codebook_size
-        end = start + self.codebook_size  # exclusive end
-        # shape: (codebook_size, d_model)
+        start = self.tokenizer_sid_offset
+        end = start + self.n_digit * self.codebook_size
         E_sub = self.embedding.weight[start:end]
         
-        return E_sub  # (codebook_size, d_model)
+        return E_sub.reshape(self.n_digit, self.codebook_size, self.n_embd)  # (n_digit, codebook_size, d_model)
 
     def forward(self, batch: dict) -> torch.Tensor:
         """
@@ -337,18 +325,11 @@ class Encoder(nn.Module):
             f"history_sid must be codebook id (0..{self.codebook_size-1}) or -1 (PAD); found out-of-range values"
         
         # 1. Convert history SID into token IDs
-        history_tokens = torch.zeros(B, seq_len, n_digit, dtype=torch.long, device=device)
-        for d in range(n_digit):
-            # Handle PAD: map -1 to token_id 0 (PAD); other codebook IDs add offset
-            codebook_ids = history_sid[:, :, d]
-            token_ids = torch.where(
-                codebook_ids == -1,  # PAD positions
-                torch.zeros_like(codebook_ids),  # map to token_id=0 (PAD)
-                codebook_ids + self.tokenizer_sid_offset + d * self.codebook_size  # add normal offset
-            )
-            # Ensure token IDs are within valid range
-            token_ids = torch.clamp(token_ids, 0, self.vocab_size - 1)
-            history_tokens[:, :, d] = token_ids
+        digit_indices = torch.arange(n_digit, device=device)
+        history_tokens = history_sid + self.tokenizer_sid_offset + digit_indices * self.codebook_size
+
+        history_tokens = torch.where(history_sid == -1, 0, history_tokens)
+        history_tokens = torch.clamp(history_tokens, 0, self.vocab_size - 1)
         
         # 2. Get token embeddings
         tok_emb = self.embedding(history_tokens)  # [B, seq_len, n_digit, d]
@@ -408,27 +389,18 @@ class Encoder(nn.Module):
         if mask_positions is None:
             mask_positions = torch.zeros(B, n_digit, device=device)
 
-        # Construct decoder input embeddings
-        input_emb = torch.zeros(B, n_digit, self.n_embd, device=device)
-        
-        for d in range(n_digit):
-            # Get codebook IDs for current digit
-            codebook_ids = input_ids[:, d]  # [B_expanded]
-            
-            # Convert to token IDs and clamp for safety
-            token_ids = codebook_ids + self.tokenizer_sid_offset + d * self.codebook_size
-            token_ids = torch.clamp(token_ids, 0, self.vocab_size - 1)
-            
-            # Safe embedding lookup
-            token_emb = self.embedding(token_ids)  # [B_expanded, emb_dim]
-            
-            # Get mask embedding for current digit
-            mask_emb = self.mask_emb_table.weight[d]  # [emb_dim] - no extra tensor creation
-            mask_emb = mask_emb.unsqueeze(0).expand(B, -1)  # [B, emb_dim]
-            
-            # Choose embedding based on mask_positions
-            is_masked = mask_positions[:, d].unsqueeze(-1)  # [B, 1]
-            input_emb[:, d, :] = torch.where(is_masked.bool(), mask_emb, token_emb)
+        digit_indices = torch.arange(n_digit, device=device) # [n_digit]
+
+        # Convert to token IDs and clamp for safety
+        token_ids = input_ids + self.tokenizer_sid_offset + digit_indices * self.codebook_size # [B, n_digit]
+        token_ids = torch.clamp(token_ids, 0, self.vocab_size - 1)
+
+        # Safe embedding lookup
+        input_emb = self.embedding(token_ids)  # [B, n_digit, emb_dim]
+
+        # Choose embedding based on mask_positions
+        is_masked = mask_positions.bool() # [B, n_digit]
+        input_emb[is_masked] = self.mask_emb_table.weight[digit_indices].expand(B, -1, -1)[is_masked]
 
         return input_emb  # [B, n_digit, emb_dim]
     
@@ -809,28 +781,6 @@ class DIFF_GRM(AbstractModel):
         else:
             raise ValueError(f"Unknown masking strategy: {self.masking_strategy}")
 
-    def _compute_digit_logits(self, hidden_last, digit):
-        """
-        Compute logits using shared embedding dot-product.
-
-        Args:
-            hidden_last: (B, d_model) - decoder output hidden state
-            digit: 0..n_digit-1 - codebook position to predict
-
-        Returns:
-            logits: (B, codebook_size) - predicted logits
-        """
-        E_sub = self.encoder.get_digit_embeddings(digit)  # (codebook_size, d_model)
-        
-        # 2.2 optional adapter
-        h = self.output_adapter(hidden_last)  # (B, d_model)
-        
-        # 2.3 compute logits via dot-product
-        # (B, d_model) @ (d_model, codebook_size).T → (B, codebook_size)
-        logits = torch.matmul(h, E_sub.t())
-        
-        return logits
-
     def forward_decoder_only(self, decoder_input_ids: torch.Tensor, encoder_hidden: torch.Tensor,
                              mask_positions: torch.Tensor = None, digit=None,
                              past_key_values=None, use_cache=False):
@@ -860,15 +810,13 @@ class DIFF_GRM(AbstractModel):
         )
         
         # Compute logits for the specified digit
+        E = self.encoder.get_digits_embeddings()  # (n_digit, codebook_size, d_model)
         if digit is not None:
-            logits = self._compute_digit_logits(decoder_hidden[:, digit, :], digit=digit)
+            h = self.output_adapter(decoder_hidden[:, digit, :])  # (B, d_model)
+            logits = torch.matmul(h, E[digit].T)
         else:
-            # If digit not specified, compute logits for all positions
-            logits = []
-            for d in range(n_digit):
-                logits_d = self._compute_digit_logits(decoder_hidden[:, d, :], digit=d)
-                logits.append(logits_d)
-            logits = torch.stack(logits, dim=1)  # [B, n_digit, codebook_size]
+            h = self.output_adapter(decoder_hidden)  # (B, n_digit, d_model)
+            logits = torch.einsum('bdm,dcm->bdc', h, E)  # [B, n_digit, codebook_size]
         
         return logits, present_key_values
 
