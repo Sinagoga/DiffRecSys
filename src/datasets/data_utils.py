@@ -4,7 +4,7 @@ import requests
 
 from hydra.utils import instantiate
 
-from src.datasets.collate import collate_fn_train, collate_fn_val
+from src.datasets.collate import collate_fn
 from src.utils.init_utils import set_worker_seed
 
 
@@ -82,7 +82,6 @@ def get_dataloaders(config, datasets, tokenization=None):
         )
 
         def get_collate_fn(split): # func to avoid contex binding
-            collate_fn = collate_fn_train if split == "train" else collate_fn_val
             if tokenization is None:
                 return collate_fn
             return lambda batch: collate_fn(tokenization(batch, split=split))

@@ -94,7 +94,11 @@ class SIDTokenizerBase(AbstractTokenizer):
 
     @property
     def vocab_size(self) -> int:
-        return 3 + self.n_digit * self.codebook_size  # PAD(0) + BOS(1) + EOS(2) + SID tokens
+        return self.sid_offset + self.n_digit * self.codebook_size  # PAD(0) + BOS(1) + EOS(2) + SID tokens
+    
+    def digit_vocab_pos(self, digit: int | torch.Tensor) -> int:
+        """Calculate the starting token ID for a given digit position."""
+        return self.sid_offset + digit * self.codebook_size
 
     def _get_codebook_bits(self, n_codebook):
         x = math.log2(n_codebook)
@@ -106,7 +110,7 @@ class SIDTokenizerBase(AbstractTokenizer):
         meta_sentences = []
         for v in dataset.id_mapping['id2item']:  # Skip item_id=0 (PAD)
             if v != "[PAD]":
-                meta_sentences.append(dataset.item2meta[v])
+                meta_sentences.append(dataset.item2meta.get(v, ""))
 
         # Supports any HF model id (e.g., Alibaba-NLP/gte-large-en-v1.5 or BAAI/bge-large-en-v1.5)
         model_id = self.config['sent_emb_model']
@@ -326,28 +330,18 @@ class SIDTokenizerBase(AbstractTokenizer):
         if len(item_seq) > max_len:
             item_seq = item_seq[-max_len:]
 
-        history_sid = []
-        history_mask = []  # True=valid position, False=PAD position
+        history_sid = torch.full(
+            (max(len(item_seq), max_len), self.n_digit),
+            fill_value=-1,
+            dtype=torch.long
+        )
 
-        for item in item_seq:
+        for i, item in enumerate(item_seq):
             if item in self.item2tokens:
-                # Convert offset token IDs to codebook IDs (0..K-1)
-                tokens = list(self.item2tokens[item])  # offset token IDs
-                codebook_ids = []
-                for digit, token_id in enumerate(tokens):
-                    codebook_id = token_id - (self.sid_offset + digit * self.codebook_size)
-                    codebook_ids.append(codebook_id)
-                history_sid.append(codebook_ids)
-                history_mask.append(True)  # valid position
-            else:
-                # Unknown items are padded with PAD (use -1 as sentinel to avoid confusion with codebook_id=0)
-                history_sid.append([-1] * self.n_digit)
-                history_mask.append(False)  # PAD position
+                history_sid[i] = torch.tensor(self.item2tokens[item], dtype=torch.long) - \
+                    self.digit_vocab_pos(torch.arange(self.n_digit))
 
-        # Pad to fixed length
-        while len(history_sid) < max_len:
-            history_sid.append([-1] * self.n_digit)
-            history_mask.append(False)  # PAD position
+        history_mask = (history_sid != -1).any(dim=-1)
 
         return history_sid, history_mask  # Return lists so datasets.map can tensorize automatically
 
@@ -415,7 +409,6 @@ class SIDTokenizerBase(AbstractTokenizer):
         return [
             self.tokenize_function(example, split=split)
             for example in batch
-            if example is not None # FIXME
         ]
 
     # ====== New: SID→items mapping helpers ======
