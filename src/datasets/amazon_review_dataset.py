@@ -4,6 +4,7 @@ from pathlib import Path
 import os
 import gzip
 import json
+import ast
 from collections import defaultdict
 
 from tqdm.auto import tqdm
@@ -234,7 +235,7 @@ class AmazonReviewDataset(BaseRecommendationDataset):
                     try:
                         info = json.loads(line)
                     except json.JSONDecodeError:
-                        info = eval(line)  # FIXME: Fallback for non-standard JSON lines
+                        info = ast.literal_eval(line)
                     if info['asin'] in item_asins:
                         data[info['asin']] = info
             

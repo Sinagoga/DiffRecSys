@@ -35,11 +35,14 @@ def main(config):
     tokenizer.load(config.global_setings.tokenizer_state_path)
 
     dataloaders = get_dataloaders(config, datasets, tokenization=tokenizer.tokenize)
-    # batch_transforms = instantiate(config.transforms.batch_transforms)
-    # batch_transforms = move_batch_transforms_to_device(batch_transforms, 'cuda') # FIXME
 
     # build model architecture, then print to console
-    model = instantiate(config.model, num_classes=config.get("num_classes", 1000))
+    model = instantiate(
+        config.model, 
+        vocab_size=tokenizer.vocab_size,
+        sid_offset=tokenizer.sid_offset,
+        num_classes=config.get("num_classes", 1000)
+    )
 
     # Apply model transforms
     for transform_config in config.global_setings.get("model_transforms", []):
@@ -63,6 +66,14 @@ def main(config):
         scheduler=scheduler,
         metrics=metrics,
     )
+
+    if config.get("transforms", {}).get("batch_transforms", None) is not None:
+        batch_transforms = instantiate(config.transforms.batch_transforms)
+        training_pipeline.batch_transforms = move_batch_transforms_to_device(
+            batch_transforms, 
+            config.trainer.get("accelerator", "cuda")
+        )
+
     
     trainer = instantiate(config.trainer)
 

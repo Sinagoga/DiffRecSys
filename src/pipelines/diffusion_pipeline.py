@@ -5,7 +5,6 @@ import lightning as L
 
 from src.models.abstract_model import AbstractModel
 from src.tokenizers.abstract_tokenizer import AbstractTokenizer
-from src.metrics.tracker import MetricTracker
 from src.metrics.base_metric import BaseMetric
 
 from src.pipelines.utils.ablate_decode import decode_ablate_confidence
@@ -29,9 +28,12 @@ class DiffusionPipeline(L.LightningModule):
         self.scheduler = scheduler
         self.config = config
         
-        self.metrics = metrics
-        self.train_metrics = MetricTracker()
-        self.evaluation_metrics = MetricTracker()
+        self.train_metrics = torch.nn.ModuleDict({
+            m.name: m for m in metrics.get("train", [])
+        })
+        self.evaluation_metrics = torch.nn.ModuleDict({
+            m.name: m for m in metrics.get("inference", [])
+        })
 
         # When ablation is enabled, automatically inject confidence_s1/s2/s3 modes to ensure evaluation runs three modes
         if self.config.get('ablate_decode', {}).get('enabled', False):
@@ -48,36 +50,44 @@ class DiffusionPipeline(L.LightningModule):
 
             self.config['beam_search_modes'] = modes
 
+    def on_after_batch_transfer(self, batch, dataloader_idx: int):
+        # FIXME
+        if hasattr(self, "batch_transforms") and self.batch_transforms is not None:
+            for transform_type, transforms in self.batch_transforms.items():
+                if transform_type in batch:
+                    for transform_name, transform in transforms.items():
+                        batch[transform_type] = transform(batch[transform_type])
+        return batch
+
     def training_step(self, batch, batch_idx):
         loss = self.model.calculate_loss(batch)
-        self.log("train_loss", loss, prog_bar=True)
+        self.log("train_loss", loss, prog_bar=True, sync_dist=True)
 
-        if self.metrics["train"]:
+        if self.train_metrics:
             preds = self.model(batch)
-            for metric in self.metrics["train"]:
-                self.train_metrics.update(metric.name, metric(preds=preds, **batch))
+            for metric in self.train_metrics.values():
+                metric.update(preds=preds, **batch)
 
         return loss
     
     def on_train_epoch_end(self):
-        for key in self.train_metrics.keys():
-            value = self.train_metrics.avg(key)
-            self.log(f"train_{key}", value, prog_bar=True)
-        self.train_metrics.reset()
+        for key, metric in self.train_metrics.items():
+            value = metric.compute()
+            self.log(f"train_{key}", value, prog_bar=True, sync_dist=True)
+            metric.reset()
     
     def validation_step(self, batch, batch_idx):
-        preds = self.generate(batch, n_return_sequences=10) # FIXME: hardcoded n_return_sequences for evaluation, can be made configurable
+        preds = self.generate(batch, n_return_sequences=self.config.get('n_return_sequences_eval', 10))
 
-        for metric in self.metrics["inference"]:
-            self.evaluation_metrics.update(metric.name, metric(preds=preds, **batch))
-        
-        return self.evaluation_metrics.result()
-    
+        for metric in self.evaluation_metrics.values():
+            metric.update(preds=preds, **batch)
+            
     def on_validation_epoch_end(self):
-        for key in self.evaluation_metrics.keys():
-            value = self.evaluation_metrics.avg(key)
-            self.log(f"val_{key}", value, prog_bar=True)
-        self.evaluation_metrics.reset()
+        for key, metric in self.evaluation_metrics.items():
+            value = metric.compute()
+            self.log(f"val_{key}", value, prog_bar=True, sync_dist=True)
+            metric.reset()
+
 
     def generate(self, batch, n_return_sequences=1, mode="confidence"):
 

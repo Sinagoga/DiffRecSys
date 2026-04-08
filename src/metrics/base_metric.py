@@ -1,7 +1,9 @@
 from abc import abstractmethod
 
+from torchmetrics import Metric
 
-class BaseMetric:
+
+class BaseMetric(Metric):
     """
     Base class for all metrics
     """
@@ -11,12 +13,12 @@ class BaseMetric:
         Args:
             name (str | None): metric name to use in logger and writer.
         """
+        super().__init__(**kwargs)
         self.name = name if name is not None else type(self).__name__
 
     @abstractmethod
-    def __call__(self, **batch):
+    def update(self, **batch):
         """
         Defines metric calculation logic for a given batch.
-        Can use external functions (like TorchMetrics) or custom ones.
         """
         raise NotImplementedError()

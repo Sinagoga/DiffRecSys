@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+from typing import Optional
 
 from src.models.abstract_model import AbstractModel
 
@@ -210,10 +211,10 @@ class Encoder(nn.Module):
         attn_pdrop: float,
         resid_pdrop: float,
 
-        norm_type: str | None = None,
-        norm_eps: float | None = None,
+        norm_type: Optional[str] = None,
+        norm_eps: Optional[float] = None,
 
-        max_history_len: int | None = None,
+        max_history_len: Optional[int] = None,
 
         sid_offset: int = 3,
         codebook_size: int = 1000,
@@ -313,10 +314,8 @@ class Encoder(nn.Module):
                 - decoder_input_ids: decoder inputs [B, n_digit]
                 - decoder_labels: ground-truth labels [B, n_digit]
         """
-        device = next(self.parameters()).device
-        
         # --- Encoder ---
-        history_sid = batch['history_sid'].to(device)  # [B, seq_len, n_digit]
+        history_sid = batch['history_sid']  # [B, seq_len, n_digit]
         B, seq_len, n_digit = history_sid.shape
         
         # Assert: history_sid should be codebook id (0..K-1) or PAD (-1)
@@ -350,7 +349,7 @@ class Encoder(nn.Module):
         
         # 6. Handle attention mask for PAD positions
         if 'history_mask' in batch:
-            history_mask = batch['history_mask'].to(device)  # [B, seq_len]
+            history_mask = batch['history_mask']  # [B, seq_len]
             # Create attention mask: True=valid position, False=PAD position
             attention_mask = history_mask.unsqueeze(1).unsqueeze(2)  # [B, 1, 1, seq_len]
             attention_mask = attention_mask.expand(-1, -1, seq_len, -1)  # [B, 1, seq_len, seq_len]
@@ -366,12 +365,12 @@ class Encoder(nn.Module):
         
         # >>> New: zero out encoder_hidden at PAD positions to prevent cross-attn from seeing invalid KV <<<
         if 'history_mask' in batch:
-            history_mask = batch['history_mask'].to(device)  # [B, S], True=valid
+            history_mask = batch['history_mask']  # [B, S], True=valid
             encoder_hidden = encoder_hidden * history_mask.unsqueeze(-1).float()
 
         return encoder_hidden
     
-    def encode_input_ids(self, input_ids: torch.Tensor, mask_positions: torch.Tensor | None = None) -> torch.Tensor:
+    def encode_input_ids(self, input_ids: torch.Tensor, mask_positions: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Encode input token IDs into embeddings, used for the decoder input.
 
@@ -418,8 +417,8 @@ class Decoder(nn.Module):
         attn_pdrop: float,
         resid_pdrop: float,
 
-        norm_type: str | None = None,
-        norm_eps: float | None = None,
+        norm_type: Optional[str] = None,
+        norm_eps: Optional[float] = None,
 
         decoder_n_layer: int = 6,
     ):
@@ -831,12 +830,11 @@ class DIFF_GRM(AbstractModel):
                 - decoder_labels: ground-truth labels [B, n_digit]
         """
         encoder_hidden = self.encoder(batch)  # [B, seq_len, emb_dim]
-        
-        device = next(self.parameters()).device
+        device = encoder_hidden.device
         
         # --- Multi-probability mask augmentation ---
-        decoder_input_ids = batch['decoder_input_ids'].to(device)  # [B, n_digit]
-        decoder_labels = batch['decoder_labels'].to(device)  # [B, n_digit]
+        decoder_input_ids = batch['decoder_input_ids']  # [B, n_digit]
+        decoder_labels = batch['decoder_labels']  # [B, n_digit]
         
         # Ensure decoder inputs are within valid range
         decoder_input_ids = torch.clamp(decoder_input_ids, 0, self.codebook_size - 1)
@@ -1066,10 +1064,9 @@ class DIFF_GRM(AbstractModel):
         return self.encoder(batch)
     
     def decode(self, batch, digit=None, past_key_values=None, use_cache=False):
-        device = next(self.parameters()).device
 
         return self.forward_decoder_only(
-            decoder_input_ids=batch['decoder_input_ids'].to(device),
-            encoder_hidden=batch['encoder_hidden'].to(device),
-            mask_positions=batch['mask_positions'].to(device) if batch.get('mask_positions', None) is not None else None,
+            decoder_input_ids=batch['decoder_input_ids'],
+            encoder_hidden=batch['encoder_hidden'],
+            mask_positions=batch['mask_positions'] if batch.get('mask_positions', None) is not None else None,
             digit=digit, past_key_values=past_key_values, use_cache=use_cache)

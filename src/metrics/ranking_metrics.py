@@ -1,3 +1,4 @@
+import torch
 from torch import Tensor
 
 from src.metrics.base_metric import BaseMetric
@@ -13,10 +14,17 @@ class RecallAtK(BaseMetric):
         super().__init__(*args, **kwargs)
 
         self.k = k
+        self.add_state("sum", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("count", default=torch.tensor(0), dist_reduce_fx="sum")
 
-    def __call__(self, preds: Tensor, labels: Tensor, **batch):
+    def update(self, preds: Tensor, labels: Tensor, **batch):
         pos_index = calculate_pos_index(preds, labels, self.k)
-        return recall_at_k(pos_index, self.k).mean()
+        batch_sum = recall_at_k(pos_index, self.k).sum()
+        self.sum += batch_sum
+        self.count += pos_index.shape[0]
+
+    def compute(self):
+        return self.sum / self.count
 
 class NDCGAtK(BaseMetric):
     def __init__(
@@ -29,7 +37,15 @@ class NDCGAtK(BaseMetric):
 
         self.k = k
         self.use_only_first_hit = use_only_first_hit
+        self.add_state("sum", default=torch.tensor(0.0), dist_reduce_fx="sum")
+        self.add_state("count", default=torch.tensor(0), dist_reduce_fx="sum")
 
-    def __call__(self, preds: Tensor, labels: Tensor, **batch):
+    def update(self, preds: Tensor, labels: Tensor, **batch):
         pos_index = calculate_pos_index(preds, labels, self.k)
-        return ndcg_at_k(pos_index, self.k, self.use_only_first_hit).mean()
+        batch_sum = ndcg_at_k(pos_index, self.k, self.use_only_first_hit).sum()
+        self.sum += batch_sum
+        self.count += pos_index.shape[0]
+        
+    def compute(self):
+        return self.sum / self.count
+

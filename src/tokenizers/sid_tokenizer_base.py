@@ -1,4 +1,5 @@
 from collections import defaultdict
+from typing import Optional
 import os
 import math
 import json
@@ -60,7 +61,7 @@ class SIDTokenizerBase(AbstractTokenizer):
         dataset: AbstractDataset,
         raw_path: str,
         pca_path: str,
-    ) -> np.ndarray | None:
+    ) -> Optional[np.ndarray]:
         """Prepare sentence embeddings required by the quantizer.
 
         Returns:
@@ -70,7 +71,7 @@ class SIDTokenizerBase(AbstractTokenizer):
 
     def _generate_semantic_ids(
         self,
-        sent_embs: np.ndarray | None,
+        sent_embs: Optional[np.ndarray],
         sem_ids_path: str,
         train_mask: np.ndarray,
     ):

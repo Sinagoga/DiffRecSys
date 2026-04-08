@@ -1,6 +1,6 @@
 from typing import Optional
 
-from torch import Tensor
+import torch.nn as nn
 
 from src.metrics.base_metric import BaseMetric
 
@@ -14,15 +14,19 @@ class AggregationMetric(BaseMetric):
         ):
         super().__init__(*args, **kwargs)
 
-        self.base_metrics = base_metrics
+        self.base_metrics = nn.ModuleList(base_metrics)
         if weights is not None:
             assert len(weights) == len(base_metrics), "Weights length must match base metrics length"
             self.weights = weights
         else:
             self.weights = [1 / len(base_metrics)] * len(base_metrics)
 
-    def __call__(self, **batch):
+    def update(self, **batch):
+        for metric in self.base_metrics:
+            metric.update(**batch)
+            
+    def compute(self):
         return sum(
-            metric(**batch) * weight
+            metric.compute() * weight
             for metric, weight in zip(self.base_metrics, self.weights)
         )
