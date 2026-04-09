@@ -314,6 +314,8 @@ class Encoder(nn.Module):
                 - decoder_input_ids: decoder inputs [B, n_digit]
                 - decoder_labels: ground-truth labels [B, n_digit]
         """
+        device = next(self.parameters()).device
+        
         # --- Encoder ---
         history_sid = batch['history_sid']  # [B, seq_len, n_digit]
         B, seq_len, n_digit = history_sid.shape
