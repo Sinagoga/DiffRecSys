@@ -1,0 +1,9 @@
+# conf/config.yaml
+data:
+  items_dir: "./train_data/amazon_data/beauty/items/"
+  output_sid_path: "./train_data/amazon_data/beauty/sids/item_sids.pt"
+
+quantization:
+  num_levels: 4        # Количество чисел в одном SID (длина кода)
+  codebook_size: 256   # Размер словаря для каждого уровня (0-255)
+  embedding_dim: 768   # Размерность твоих векторов из TFRecord
