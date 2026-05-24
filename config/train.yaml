@@ -4,6 +4,7 @@ defaults:
   - metrics: ranking
   - datasets: amazon
   - dataloaders: stable-large
+  - training_pipeline: base
   - _self_
 
 global_setings:
@@ -19,7 +20,7 @@ global_setings:
   tokenizer_state_path: ${global_setings.save_dir}/tokenizer_state.pkl
 
 training_pipeline:
-  _target_: src.pipelines.diffusion_pipeline.DiffusionPipeline
+  # _target_: src.pipelines.diffusion_pipeline.DiffusionPipeline
 
   optimizer:
     _target_: torch.optim.AdamW
@@ -78,6 +79,7 @@ trainer:
   accumulate_grad_batches: 1
   gradient_clip_val: 1.0
   check_val_every_n_epoch: 20
+  fast_dev_run: false
 
   deterministic: True # False for faster but less reproducible results
   benchmark: False    # True enables cudnn auto-tuner, may be non-deterministic
