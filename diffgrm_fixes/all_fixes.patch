@@ -1,0 +1,120 @@
+diff --git a/genrec/models/AR_GRM/model.py b/genrec/models/AR_GRM/model.py
+index 2d867e7..03db927 100644
+--- a/genrec/models/AR_GRM/model.py
++++ b/genrec/models/AR_GRM/model.py
+@@ -570,7 +570,8 @@ class AR_GRM(AbstractModel):
+ 
+                     N = beams.size(0) // B
+                     idx = (torch.arange(B, device=device).unsqueeze(1)*N + parent).view(-1)
+-                    beams = torch.cat([beams[idx], tk_idx.view(B, -1, pre).gather(2, token.unsqueeze(-1)).view(-1,1)], dim=1)
++                    chosen_tok = tk_idx[idx, token.view(-1)].view(-1, 1)
++                    beams = torch.cat([beams[idx], chosen_tok], dim=1)
+                     lp = best_lp.view(-1)
+ 
+                     new_self_kv = []
+diff --git a/genrec/models/DIFF_GRM/evaluator.py b/genrec/models/DIFF_GRM/evaluator.py
+index 3977256..297357c 100644
+--- a/genrec/models/DIFF_GRM/evaluator.py
++++ b/genrec/models/DIFF_GRM/evaluator.py
+@@ -190,7 +190,7 @@ class DIFF_GRMEvaluator:
+ 
+     def calculate_weighted_score(self, preds, labels):
+         """
+-        计算加权综合分数：NDCG@10 * 0.6 + RECALL@10 * 0.4
++        计算加权综合分数：NDCG@10 * 0.8 + RECALL@10 * 0.2
+         
+         Args:
+             preds: (batch_size, beam_size, n_digit) - 生成的SID序列
+@@ -207,7 +207,7 @@ class DIFF_GRMEvaluator:
+         # 计算RECALL@10
+         recall_10 = self.recall_at_k(pos_index, k=10)
+         
+-        # 计算加权分数：NDCG@10 * 0.6 + RECALL@10 * 0.4
++        # 计算加权分数：NDCG@10 * 0.8 + RECALL@10 * 0.2
+         weighted_score = 0.8 * ndcg_10 + 0.2 * recall_10
+         
+         return weighted_score
+diff --git a/genrec/models/DIFF_GRM/model.py b/genrec/models/DIFF_GRM/model.py
+index 390a715..7dac95a 100644
+--- a/genrec/models/DIFF_GRM/model.py
++++ b/genrec/models/DIFF_GRM/model.py
+@@ -260,7 +260,7 @@ class DIFF_GRM(AbstractModel):
+             guided_cfg = config.get('guided_steps', 'auto')
+             self.guided_steps = self.n_digit if guided_cfg in (None, 'auto') else int(guided_cfg)
+             # 限制最多 4 步（你现在 n_digit=4，因此刚好 4）
+-            self.guided_steps = min(self.guided_steps, self.n_digit, 4)
++            self.guided_steps = min(self.guided_steps, self.n_digit)
+             self.guided_conf_metric = config.get('guided_conf_metric', 'msp')
+             assert self.guided_conf_metric in ('msp', 'entropy'), \
+                 f"guided_conf_metric must be one of ['msp','entropy'], got {self.guided_conf_metric}"
+@@ -443,7 +443,7 @@ class DIFF_GRM(AbstractModel):
+         elif strategy == 'guided':
+             guided_cfg = kw.get('guided_steps', self.config.get('guided_steps', 'auto'))
+             self.guided_steps = self.n_digit if guided_cfg in (None, 'auto') else int(guided_cfg)
+-            self.guided_steps = min(self.guided_steps, self.n_digit, 4)
++            self.guided_steps = min(self.guided_steps, self.n_digit)
+             self.guided_conf_metric = kw.get('guided_conf_metric', self.config.get('guided_conf_metric', 'msp'))
+             self.guided_select = kw.get('guided_select', self.config.get('guided_select', 'least'))
+             # 注意：forward 里读 self.config['guided_refresh_each_step']，所以要同步回 config
+diff --git a/genrec/models/DIFF_GRM/tokenizer.py b/genrec/models/DIFF_GRM/tokenizer.py
+index ca00c32..2b00574 100644
+--- a/genrec/models/DIFF_GRM/tokenizer.py
++++ b/genrec/models/DIFF_GRM/tokenizer.py
+@@ -178,7 +178,7 @@ class DIFF_GRMTokenizer(AbstractTokenizer):
+             res = faiss.StandardGpuResources()
+             res.setTempMemory(1024 * 1024 * 512)
+             co = faiss.GpuClonerOptions()
+-            co.useFloat16 = self.n_digit >= 56
++            co.useFloat16 = False
+         faiss.omp_set_num_threads(self.config['faiss_omp_num_threads'])
+         index = faiss.index_factory(
+             sent_embs.shape[1],
+diff --git a/genrec/models/DIFF_GRM/trainer.py b/genrec/models/DIFF_GRM/trainer.py
+index b7d70ef..3de01a8 100644
+--- a/genrec/models/DIFF_GRM/trainer.py
++++ b/genrec/models/DIFF_GRM/trainer.py
+@@ -245,10 +245,15 @@ class DIFF_GRMTrainer:
+         
+         # 🚀 修复：在训练结束前加载最佳模型权重
+         if self.accelerator.is_main_process:
+-            self.log(f'Loading best checkpoint ({self.saved_model_ckpt}) for final test')
+-            state_dict = torch.load(self.saved_model_ckpt, map_location="cpu")
+-            self.model.load_state_dict(state_dict)
+-            self.model.to(next(self.model.parameters()).device)  # 保险：放回正确device
++            if os.path.exists(self.saved_model_ckpt):
++                self.log(f'Loading best checkpoint ({self.saved_model_ckpt}) for final test')
++                state_dict = torch.load(self.saved_model_ckpt, map_location="cpu")
++                self.model.load_state_dict(state_dict)
++                self.model.to(next(self.model.parameters()).device)  # 保险：放回正确device
++            else:
++                self.log(f'[WARN] No checkpoint found at {self.saved_model_ckpt} '
++                         f'(no eval improved, or training ran fewer than eval_start_epoch epochs); '
++                         f'keeping in-memory weights for final test')
+         
+         return best_epoch, best_val_score
+ 
+diff --git a/main.py b/main.py
+index 5465b4b..4ac1bc8 100644
+--- a/main.py
++++ b/main.py
+@@ -12,7 +12,7 @@ from genrec.utils import parse_command_line_args
+ 
+ def parse_args():
+     parser = argparse.ArgumentParser()
+-    parser.add_argument('--model', type=str, default='RPG', help='Model name')
++    parser.add_argument('--model', type=str, default='DIFF_GRM', help='Model name')
+     parser.add_argument('--dataset', type=str, default='AmazonReviews2014', help='Dataset name')
+     parser.add_argument('--checkpoint', type=str, default=None, help='Checkpoint path')
+     return parser.parse_known_args()
+diff --git a/requirements.txt b/requirements.txt
+index 55e2afd..02de8e9 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -44,7 +44,6 @@ nvidia-nccl-cu12==2.21.5
+ nvidia-nvjitlink-cu12==12.4.127
+ nvidia-nvtx-cu12==12.4.127
+ packaging==25.0
+-panda==0.3.1
+ pandas==2.3.1
+ pillow==11.3.0
+ platformdirs==4.3.8
