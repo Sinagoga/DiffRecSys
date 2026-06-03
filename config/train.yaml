@@ -9,6 +9,7 @@ defaults:
 
 global_setings:
   seed: 1
+  exp_name: "testing"
   resume_from: null
   save_dir: "./saved/testing"
   override: True
@@ -87,7 +88,7 @@ trainer:
   logger:
     - _target_: lightning.pytorch.loggers.WandbLogger
       project: "diffusion-recommendation"
-      name: "testing"
+      name: ${global_setings.exp_name}
       offline: True
   callbacks:
     - _target_: lightning.pytorch.callbacks.ModelCheckpoint

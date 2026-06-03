@@ -24,7 +24,7 @@ class CoRePipeline(DiffusionPipeline):
         k_rm = core_cfg.get('remasking_limit', 1)
         L = self.config.get('answer_length', 128)
         
-        mask_token_id = self.tokenizer.mask_token_id
+        mask_token_id = self.tokenizer.mask_token
 
         prompt = batch.get("prompt_ids", torch.empty((batch_size, 0), dtype=torch.long, device=device))
         prompt_len = prompt.size(1)

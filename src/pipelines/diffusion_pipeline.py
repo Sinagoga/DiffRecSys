@@ -64,9 +64,12 @@ class DiffusionPipeline(L.LightningModule):
         self.log("train_loss", loss, prog_bar=True, sync_dist=True)
 
         if self.train_metrics:
-            preds = self.model(batch)
+            # preds = self.model(batch)
+            preds = self.generate(batch, n_return_sequences=self.config.get('n_return_sequences_eval', 10))
+
             for metric in self.train_metrics.values():
-                metric.update(preds=preds, **batch)
+                # metric.update(preds=preds, **batch)
+                metric.update(preds=preds, labels=batch['decoder_labels'])
 
         return loss
     
@@ -80,7 +83,8 @@ class DiffusionPipeline(L.LightningModule):
         preds = self.generate(batch, n_return_sequences=self.config.get('n_return_sequences_eval', 10))
 
         for metric in self.evaluation_metrics.values():
-            metric.update(preds=preds, **batch)
+            # metric.update(preds=preds, labels=batch['labels'], **batch)
+            metric.update(preds=preds, labels=batch['labels'])
             
     def on_validation_epoch_end(self):
         for key, metric in self.evaluation_metrics.items():
