@@ -1,4 +1,5 @@
 from typing import Dict, List
+import datetime
 
 import torch
 import lightning as L
@@ -80,7 +81,11 @@ class DiffusionPipeline(L.LightningModule):
             metric.reset()
     
     def validation_step(self, batch, batch_idx):
+        start_time = datetime.datetime.now()
         preds = self.generate(batch, n_return_sequences=self.config.get('n_return_sequences_eval', 10))
+        end_time = datetime.datetime.now()
+        inference_time = (end_time - start_time).total_seconds()
+        self.log("val_inference_time", inference_time, prog_bar=True, sync_dist=True)
 
         for metric in self.evaluation_metrics.values():
             # metric.update(preds=preds, labels=batch['labels'], **batch)

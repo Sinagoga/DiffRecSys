@@ -61,8 +61,8 @@
 
 export USE_TF=0
 HYDRA_FULL_ERROR=1 /Users/dmitrii/miniconda3/bin/python train_diffusion.py \
-    global_setings.exp_name=core_exp \
-    training_pipeline=core \
+    global_setings.exp_name=base_exp \
+    training_pipeline=base \
     trainer.accelerator=mps \
     trainer.precision=32 \
     trainer.max_epochs=3 \
