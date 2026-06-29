@@ -1,0 +1,24 @@
+train: []
+inference:
+  - _target_: src.metrics.RecallAtK
+    name: "Recall@5"
+    k: 5
+  - _target_: src.metrics.RecallAtK
+    name: "Recall@10"
+    k: 10
+  - _target_: src.metrics.NDCGAtK
+    name: "NDCG@5"
+    k: 5
+    use_only_first_hit: true
+  - _target_: src.metrics.NDCGAtK
+    name: "NDCG@10"
+    k: 10
+    use_only_first_hit: true
+  - _target_: src.metrics.AggregationMetric
+    name: "Val@10"
+    base_metrics:
+      - _target_: src.metrics.RecallAtK
+        k: 10
+      - _target_: src.metrics.NDCGAtK
+        k: 10
+        use_only_first_hit: true

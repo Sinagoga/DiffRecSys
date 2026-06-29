@@ -1,0 +1,8 @@
+_target_: src.pipelines.core_pipeline.CoRePipeline
+core_remasking:
+  diffusion_steps: 128
+  gamma_s: 0.25
+  gamma_e: 0.75
+  revision_interval: 8
+  candidate_size: 32
+  remasking_limit: 1

@@ -1,0 +1,9 @@
+_target_: src.pipelines.fast_dllm_pipeline.FastDLLMPipeline
+fast_dllm:
+  block_size: 32
+  steps_per_block: 10
+  strategy: threshold  # 'threshold' или 'factor'
+  threshold: 0.9       # при 1.0 будет sequential decoding
+  factor: 0.5
+  use_cache: true
+  use_dual_cache: false
